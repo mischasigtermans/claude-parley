@@ -33,26 +33,36 @@ Works in both Claude Code (CLI) and Cowork. The MCP server ships as a self-conta
 ## Quick Start
 
 ```
-# Register peers (once per project)
-/parley add stagent ~/Sites/stagent "Booking and management platform for agencies and artists"
-/parley add onoma ~/Github/mischasigtermans/onoma "Memory layer for AI"
-/parley add steve ~/Github/mischasigtermans/steve-personal "Steve persona, strategic advisor"
+# Discover projects you've used recently and aren't yet registered
+/parley discover
+```
 
+You'll see a list of candidate paths. Just say which ones to register, in plain language:
+
+```
+"add the first three as peers"
+"register that one as docs and that one as api"
+"add ~/Github/example as my-project"
+```
+
+The `parley-awareness` skill picks up the names and calls `parley_add` for each. From then on, any session can consult them by alias:
+
+```
 # See who's reachable
 /parley peers
 
-# Talk to a peer. Natural language works because of the awareness skill.
-"ask stagent how they handle Stripe webhook retries"
-"check with onoma what the current shape of /api/contexts is"
-"what would Steve say about this product trade-off"
+# Ask a peer — natural language works
+"ask docs what's our auth strategy"
+"check with api how it handles rate limits"
 ```
 
 You can also be explicit:
 
 ```
-/parley ask stagent "Summarize the current Stripe webhook retry strategy in three bullets."
-/parley log stagent
-/parley reset stagent
+/parley add my-project ~/code/my-project
+/parley ask my-project "Summarize the current architecture in three bullets."
+/parley log my-project
+/parley reset my-project
 ```
 
 ## How It Works
