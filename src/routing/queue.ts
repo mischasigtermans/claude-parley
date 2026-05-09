@@ -5,6 +5,8 @@ import { paths } from '../registry/paths.js';
 import { isErrnoException } from '../util/errors.js';
 
 export type MessageType = 'query' | 'response' | 'ping' | 'session-ended';
+export type InboxStatus = 'pending' | 'in-progress' | 'read';
+export type MessageStatus = InboxStatus | 'sent';
 
 export interface Message {
   id: string;
@@ -12,7 +14,7 @@ export interface Message {
   to: string;
   type: MessageType;
   timestamp: string;
-  status: 'pending' | 'read' | 'sent';
+  status: MessageStatus;
   content: string;
   inReplyTo: string | null;
   metadata: { fromProject: string };
@@ -63,15 +65,17 @@ export async function sendMessage(opts: {
   return id;
 }
 
+export type MarkMode = 'read' | 'in-progress' | 'none';
+
 export async function waitForMessage(
   sessionId: string,
   predicate: (msg: Message) => boolean,
-  opts: { timeoutMs: number; markRead?: boolean } = { timeoutMs: 90_000 },
+  opts: { timeoutMs: number; mark?: MarkMode } = { timeoutMs: 90_000 },
 ): Promise<Message | null> {
   const inbox = paths.sessionInbox(sessionId);
-  const readDir = paths.sessionInboxRead(sessionId);
   await mkdir(inbox, { recursive: true });
   const deadline = Date.now() + opts.timeoutMs;
+  const mark = opts.mark ?? 'read';
 
   while (Date.now() < deadline) {
     const entries = await readdir(inbox).catch(() => [] as string[]);
@@ -94,10 +98,14 @@ export async function waitForMessage(
       if (msg.from === sessionId) continue;
       if (!predicate(msg)) continue;
 
-      if (opts.markRead ?? true) {
-        msg.status = 'read';
-        await mkdir(readDir, { recursive: true });
-        const target = join(readDir, entry);
+      if (mark !== 'none') {
+        const targetDir =
+          mark === 'in-progress'
+            ? paths.sessionInboxInProgress(sessionId)
+            : paths.sessionInboxRead(sessionId);
+        msg.status = mark;
+        await mkdir(targetDir, { recursive: true });
+        const target = join(targetDir, entry);
         const tmp = `${target}.${process.pid}.tmp`;
         await writeFile(tmp, JSON.stringify(msg, null, 2));
         await rename(tmp, target);
@@ -108,6 +116,106 @@ export async function waitForMessage(
     await sleep(POLL_INTERVAL_MS);
   }
 
+  return null;
+}
+
+/**
+ * Move an in-progress message to read/. Called by parley_respond after the
+ * response has been sent. No-op (returns false) if the message isn't in
+ * in-progress/, e.g. respond was called twice or for a foreign id.
+ */
+export async function completeInProgress(
+  sessionId: string,
+  messageId: string,
+): Promise<boolean> {
+  const fromPath = join(paths.sessionInboxInProgress(sessionId), `${messageId}.json`);
+  let raw: string;
+  try {
+    raw = await readFile(fromPath, 'utf8');
+  } catch {
+    return false;
+  }
+  let msg: Message;
+  try {
+    msg = JSON.parse(raw) as Message;
+  } catch {
+    return false;
+  }
+  msg.status = 'read';
+  const readDir = paths.sessionInboxRead(sessionId);
+  await mkdir(readDir, { recursive: true });
+  const target = join(readDir, `${messageId}.json`);
+  const tmp = `${target}.${process.pid}.tmp`;
+  await writeFile(tmp, JSON.stringify(msg, null, 2));
+  await rename(tmp, target);
+  await unlink(fromPath).catch(() => {});
+  return true;
+}
+
+/**
+ * Return any in-progress messages older than `olderThanMs` to the inbox as
+ * pending so the next parley_receive_next re-delivers them. Guards against
+ * silent message loss when a listener consumes a message but never responds.
+ */
+export async function recoverStuckInProgress(
+  sessionId: string,
+  olderThanMs: number,
+): Promise<number> {
+  const dir = paths.sessionInboxInProgress(sessionId);
+  let entries: string[];
+  try {
+    entries = await readdir(dir);
+  } catch {
+    return 0;
+  }
+  const cutoff = Date.now() - olderThanMs;
+  let recovered = 0;
+  for (const entry of entries) {
+    if (!entry.endsWith('.json')) continue;
+    const path = join(dir, entry);
+    try {
+      const s = await stat(path);
+      if (s.mtimeMs >= cutoff) continue;
+      const raw = await readFile(path, 'utf8');
+      const msg = JSON.parse(raw) as Message;
+      msg.status = 'pending';
+      const inboxDir = paths.sessionInbox(sessionId);
+      await mkdir(inboxDir, { recursive: true });
+      const target = join(inboxDir, entry);
+      const tmp = `${target}.${process.pid}.tmp`;
+      await writeFile(tmp, JSON.stringify(msg, null, 2));
+      await rename(tmp, target);
+      await unlink(path).catch(() => {});
+      recovered++;
+    } catch {
+      // ignore malformed or racing entries
+    }
+  }
+  return recovered;
+}
+
+/**
+ * Look up where a message currently sits in a session's inbox tree.
+ * Used by the asker's timeout path to diagnose why no response arrived.
+ * Returns null if the message isn't in any inbox dir (pruned or never delivered).
+ */
+export async function findInboxStatus(
+  sessionId: string,
+  messageId: string,
+): Promise<InboxStatus | null> {
+  const candidates: Array<{ status: InboxStatus; dir: string }> = [
+    { status: 'pending', dir: paths.sessionInbox(sessionId) },
+    { status: 'in-progress', dir: paths.sessionInboxInProgress(sessionId) },
+    { status: 'read', dir: paths.sessionInboxRead(sessionId) },
+  ];
+  for (const { status, dir } of candidates) {
+    try {
+      await access(join(dir, `${messageId}.json`));
+      return status;
+    } catch {
+      // not here, try next
+    }
+  }
   return null;
 }
 

@@ -10,7 +10,7 @@ import { readHeadless, writeHeadless, HeadlessRecord } from '../registry/headles
 import { withLock } from '../registry/locks.js';
 import { paths, expandHome } from '../registry/paths.js';
 import { getClaudeDriver } from '../drivers/claude.js';
-import { sendMessage, waitForMessage } from './queue.js';
+import { sendMessage, waitForMessage, findInboxStatus } from './queue.js';
 import { appendTurn } from './transcript.js';
 import { errorMessage } from '../util/errors.js';
 
@@ -177,8 +177,15 @@ async function routeLive(opts: {
     { timeoutMs: opts.timeoutMs ?? 120_000 },
   );
   if (!reply) {
+    const status = await findInboxStatus(opts.target.sessionId, msgId);
+    const hints: Record<string, string> = {
+      pending: 'message never consumed (peer may have stopped listening)',
+      'in-progress': 'peer consumed the query but has not responded yet (still working, or its agent stalled, recovery will retry)',
+      read: 'peer marked the query read but no matching response landed',
+    };
+    const hint = (status && hints[status]) ?? 'message no longer in the peer inbox (pruned, or never delivered)';
     throw new Error(
-      `parley: peer "${opts.target.alias}" did not respond within timeout. They may have stopped listening.`,
+      `parley: peer "${opts.target.alias}" did not respond within timeout. Status: ${hint}.`,
     );
   }
   return reply.content;

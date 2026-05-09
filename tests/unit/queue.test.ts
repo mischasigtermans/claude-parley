@@ -1,7 +1,16 @@
 import { describe, it, beforeEach, afterEach, expect } from 'vitest';
 import { mkdir, readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { sendMessage, waitForMessage, listInbox, pruneRead, Message } from '../../src/routing/queue.js';
+import {
+  sendMessage,
+  waitForMessage,
+  listInbox,
+  pruneRead,
+  completeInProgress,
+  recoverStuckInProgress,
+  findInboxStatus,
+  Message,
+} from '../../src/routing/queue.js';
 import { writeManifest } from '../../src/registry/sessions.js';
 import { paths } from '../../src/registry/paths.js';
 import { setup } from '../helpers/tmpdir.js';
@@ -149,6 +158,134 @@ describe('queue / waitForMessage', () => {
 
     const result = await waitForMessage('self', () => true, { timeoutMs: 200 });
     expect(result).toBeNull();
+  });
+});
+
+describe('queue / in-progress lifecycle', () => {
+  const t = setup();
+  beforeEach(t.before);
+  afterEach(t.after);
+
+  it("waitForMessage with mark='in-progress' moves the message into in-progress/ with that status", async () => {
+    await registerSession('a');
+    await registerSession('b');
+    const id = await sendMessage({
+      fromSessionId: 'a',
+      fromProject: 'A',
+      toSessionId: 'b',
+      type: 'query',
+      content: 'q',
+    });
+    const msg = await waitForMessage('b', (m) => m.id === id, {
+      timeoutMs: 2000,
+      mark: 'in-progress',
+    });
+    expect(msg).not.toBeNull();
+
+    const inProg = join(paths.sessionInboxInProgress('b'), `${id}.json`);
+    const reread: Message = JSON.parse(await readFile(inProg, 'utf8'));
+    expect(reread.status).toBe('in-progress');
+
+    // Original location empty; not in read/ either.
+    await expect(readFile(join(paths.sessionInbox('b'), `${id}.json`), 'utf8')).rejects.toThrow();
+    await expect(
+      readFile(join(paths.sessionInboxRead('b'), `${id}.json`), 'utf8'),
+    ).rejects.toThrow();
+  });
+
+  it('completeInProgress moves the message from in-progress/ to read/', async () => {
+    await registerSession('a');
+    await registerSession('b');
+    const id = await sendMessage({
+      fromSessionId: 'a',
+      fromProject: 'A',
+      toSessionId: 'b',
+      type: 'query',
+      content: 'q',
+    });
+    await waitForMessage('b', (m) => m.id === id, { timeoutMs: 2000, mark: 'in-progress' });
+
+    expect(await completeInProgress('b', id)).toBe(true);
+
+    const readPath = join(paths.sessionInboxRead('b'), `${id}.json`);
+    const final: Message = JSON.parse(await readFile(readPath, 'utf8'));
+    expect(final.status).toBe('read');
+    await expect(
+      readFile(join(paths.sessionInboxInProgress('b'), `${id}.json`), 'utf8'),
+    ).rejects.toThrow();
+  });
+
+  it('completeInProgress is a no-op (false) for unknown ids', async () => {
+    await registerSession('b');
+    expect(await completeInProgress('b', 'msg-missing')).toBe(false);
+  });
+
+  it('recoverStuckInProgress returns stuck messages to the inbox as pending', async () => {
+    await registerSession('a');
+    await registerSession('b');
+    const id = await sendMessage({
+      fromSessionId: 'a',
+      fromProject: 'A',
+      toSessionId: 'b',
+      type: 'query',
+      content: 'q',
+    });
+    await waitForMessage('b', (m) => m.id === id, { timeoutMs: 2000, mark: 'in-progress' });
+
+    // Backdate the in-progress file's mtime past the threshold.
+    const inProgPath = join(paths.sessionInboxInProgress('b'), `${id}.json`);
+    const { utimes } = await import('node:fs/promises');
+    const longAgo = new Date(Date.now() - 60 * 60 * 1000);
+    await utimes(inProgPath, longAgo, longAgo);
+
+    const recovered = await recoverStuckInProgress('b', 5 * 60 * 1000);
+    expect(recovered).toBe(1);
+
+    const inboxPath = join(paths.sessionInbox('b'), `${id}.json`);
+    const reread: Message = JSON.parse(await readFile(inboxPath, 'utf8'));
+    expect(reread.status).toBe('pending');
+    await expect(readFile(inProgPath, 'utf8')).rejects.toThrow();
+  });
+
+  it('recoverStuckInProgress leaves fresh messages alone', async () => {
+    await registerSession('a');
+    await registerSession('b');
+    const id = await sendMessage({
+      fromSessionId: 'a',
+      fromProject: 'A',
+      toSessionId: 'b',
+      type: 'query',
+      content: 'q',
+    });
+    await waitForMessage('b', (m) => m.id === id, { timeoutMs: 2000, mark: 'in-progress' });
+
+    const recovered = await recoverStuckInProgress('b', 60 * 60 * 1000);
+    expect(recovered).toBe(0);
+
+    const inProgPath = join(paths.sessionInboxInProgress('b'), `${id}.json`);
+    const stillThere: Message = JSON.parse(await readFile(inProgPath, 'utf8'));
+    expect(stillThere.status).toBe('in-progress');
+  });
+
+  it('findInboxStatus reports pending, in-progress, read, or null', async () => {
+    await registerSession('a');
+    await registerSession('b');
+    const id = await sendMessage({
+      fromSessionId: 'a',
+      fromProject: 'A',
+      toSessionId: 'b',
+      type: 'query',
+      content: 'q',
+    });
+    expect(await findInboxStatus('b', id)).toBe('pending');
+
+    await waitForMessage('b', (m) => m.id === id, { timeoutMs: 2000, mark: 'in-progress' });
+    expect(await findInboxStatus('b', id)).toBe('in-progress');
+
+    await completeInProgress('b', id);
+    expect(await findInboxStatus('b', id)).toBe('read');
+
+    expect(await findInboxStatus('b', 'msg-nonexistent')).toBeNull();
   });
 });
 

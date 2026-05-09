@@ -14103,6 +14103,7 @@ var paths = {
   sessionDir: (sid) => join(parleyDir(), "sessions", sid),
   sessionManifest: (sid) => join(parleyDir(), "sessions", sid, "manifest.json"),
   sessionInbox: (sid) => join(parleyDir(), "sessions", sid, "inbox"),
+  sessionInboxInProgress: (sid) => join(parleyDir(), "sessions", sid, "inbox", "in-progress"),
   sessionInboxRead: (sid) => join(parleyDir(), "sessions", sid, "inbox", "read"),
   sessionOutbox: (sid) => join(parleyDir(), "sessions", sid, "outbox"),
   headlessFor: (alias) => join(parleyDir(), "headless", `${alias}.json`),
@@ -14791,9 +14792,9 @@ async function sendMessage(opts) {
 }
 async function waitForMessage(sessionId, predicate, opts = { timeoutMs: 90000 }) {
   const inbox = paths.sessionInbox(sessionId);
-  const readDir = paths.sessionInboxRead(sessionId);
   await mkdir4(inbox, { recursive: true });
   const deadline = Date.now() + opts.timeoutMs;
+  const mark = opts.mark ?? "read";
   while (Date.now() < deadline) {
     const entries = await readdir2(inbox).catch(() => []);
     for (const entry of entries) {
@@ -14818,10 +14819,11 @@ async function waitForMessage(sessionId, predicate, opts = { timeoutMs: 90000 })
         continue;
       if (!predicate(msg))
         continue;
-      if (opts.markRead ?? true) {
-        msg.status = "read";
-        await mkdir4(readDir, { recursive: true });
-        const target = join3(readDir, entry);
+      if (mark !== "none") {
+        const targetDir = mark === "in-progress" ? paths.sessionInboxInProgress(sessionId) : paths.sessionInboxRead(sessionId);
+        msg.status = mark;
+        await mkdir4(targetDir, { recursive: true });
+        const target = join3(targetDir, entry);
         const tmp = `${target}.${process.pid}.tmp`;
         await writeFile3(tmp, JSON.stringify(msg, null, 2));
         await rename(tmp, target);
@@ -14830,6 +14832,77 @@ async function waitForMessage(sessionId, predicate, opts = { timeoutMs: 90000 })
       return msg;
     }
     await sleep2(POLL_INTERVAL_MS);
+  }
+  return null;
+}
+async function completeInProgress(sessionId, messageId) {
+  const fromPath = join3(paths.sessionInboxInProgress(sessionId), `${messageId}.json`);
+  let raw;
+  try {
+    raw = await readFile5(fromPath, "utf8");
+  } catch {
+    return false;
+  }
+  let msg;
+  try {
+    msg = JSON.parse(raw);
+  } catch {
+    return false;
+  }
+  msg.status = "read";
+  const readDir = paths.sessionInboxRead(sessionId);
+  await mkdir4(readDir, { recursive: true });
+  const target = join3(readDir, `${messageId}.json`);
+  const tmp = `${target}.${process.pid}.tmp`;
+  await writeFile3(tmp, JSON.stringify(msg, null, 2));
+  await rename(tmp, target);
+  await unlink3(fromPath).catch(() => {});
+  return true;
+}
+async function recoverStuckInProgress(sessionId, olderThanMs) {
+  const dir = paths.sessionInboxInProgress(sessionId);
+  let entries;
+  try {
+    entries = await readdir2(dir);
+  } catch {
+    return 0;
+  }
+  const cutoff = Date.now() - olderThanMs;
+  let recovered = 0;
+  for (const entry of entries) {
+    if (!entry.endsWith(".json"))
+      continue;
+    const path = join3(dir, entry);
+    try {
+      const s = await stat(path);
+      if (s.mtimeMs >= cutoff)
+        continue;
+      const raw = await readFile5(path, "utf8");
+      const msg = JSON.parse(raw);
+      msg.status = "pending";
+      const inboxDir = paths.sessionInbox(sessionId);
+      await mkdir4(inboxDir, { recursive: true });
+      const target = join3(inboxDir, entry);
+      const tmp = `${target}.${process.pid}.tmp`;
+      await writeFile3(tmp, JSON.stringify(msg, null, 2));
+      await rename(tmp, target);
+      await unlink3(path).catch(() => {});
+      recovered++;
+    } catch {}
+  }
+  return recovered;
+}
+async function findInboxStatus(sessionId, messageId) {
+  const candidates = [
+    { status: "pending", dir: paths.sessionInbox(sessionId) },
+    { status: "in-progress", dir: paths.sessionInboxInProgress(sessionId) },
+    { status: "read", dir: paths.sessionInboxRead(sessionId) }
+  ];
+  for (const { status, dir } of candidates) {
+    try {
+      await access(join3(dir, `${messageId}.json`));
+      return status;
+    } catch {}
   }
   return null;
 }
@@ -15018,7 +15091,14 @@ async function routeLive(opts) {
   });
   const reply = await waitForMessage(opts.fromSessionId, (m) => m.type === "response" && m.inReplyTo === msgId, { timeoutMs: opts.timeoutMs ?? 120000 });
   if (!reply) {
-    throw new Error(`parley: peer "${opts.target.alias}" did not respond within timeout. They may have stopped listening.`);
+    const status = await findInboxStatus(opts.target.sessionId, msgId);
+    const hints = {
+      pending: "message never consumed (peer may have stopped listening)",
+      "in-progress": "peer consumed the query but has not responded yet (still working, or its agent stalled, recovery will retry)",
+      read: "peer marked the query read but no matching response landed"
+    };
+    const hint = (status && hints[status]) ?? "message no longer in the peer inbox (pruned, or never delivered)";
+    throw new Error(`parley: peer "${opts.target.alias}" did not respond within timeout. Status: ${hint}.`);
   }
   return reply.content;
 }
@@ -15638,7 +15718,7 @@ var parleyReceiveNext = {
     if (!sid)
       throw new Error("parley: no current session registered.");
     const timeoutMs = typeof args.timeoutMs === "number" ? args.timeoutMs : 600000;
-    const msg = await waitForMessage(sid, () => true, { timeoutMs, markRead: true });
+    const msg = await waitForMessage(sid, () => true, { timeoutMs, mark: "in-progress" });
     if (!msg) {
       return "TIMEOUT. No message arrived. The listen loop should call this tool again.";
     }
@@ -15714,14 +15794,16 @@ var parleyRespond = {
       throw new Error("parley: no current session registered.");
     const manifest = await readManifest(sid);
     const fromProject = manifest?.alias ?? ctx.getCurrentProjectName();
+    const inReplyTo = String(args.inReplyTo);
     const id = await sendMessage({
       fromSessionId: sid,
       fromProject,
       toSessionId: String(args.toSessionId),
       type: "response",
       content: String(args.content),
-      inReplyTo: String(args.inReplyTo)
+      inReplyTo
     });
+    await completeInProgress(sid, inReplyTo);
     return `Sent response ${id} to ${args.toSessionId}.`;
   }
 };
@@ -15804,9 +15886,10 @@ var tools = [
 // src/server.ts
 var HEARTBEAT_INTERVAL_MS = 30000;
 var PRUNE_OLDER_THAN_MS = 24 * 60 * 60 * 1000;
+var RECOVER_STUCK_OLDER_THAN_MS = 10 * 60 * 1000;
 async function main() {
   const ctx = makeContext();
-  const server = new Server({ name: "parley", version: "0.2.0" }, { capabilities: { tools: {} } });
+  const server = new Server({ name: "parley", version: "0.2.1" }, { capabilities: { tools: {} } });
   const byName = new Map(tools.map((t) => [t.name, t]));
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: tools.map((t) => ({
@@ -15843,6 +15926,7 @@ async function main() {
     if (sid) {
       touchHeartbeat(sid).catch(() => {});
       pruneRead(sid, PRUNE_OLDER_THAN_MS).catch(() => {});
+      recoverStuckInProgress(sid, RECOVER_STUCK_OLDER_THAN_MS).catch(() => {});
     }
   }, HEARTBEAT_INTERVAL_MS);
   heartbeat.unref();

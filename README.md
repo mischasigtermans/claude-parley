@@ -10,8 +10,6 @@ Available through the [Ryde Ventures plugin marketplace](https://github.com/ryde
 
 **Cross-project consultation.** You're starting a new Laravel app. You remember [stagent](https://stagent.com) solved Stripe webhook retries cleanly. *"Ask stagent how they handle webhook retries."* The stagent agent reads its own code and replies with file:line references and the trade-offs. Follow-ups continue the thread. The headless session persists. Same pattern for any project. *"Ask onoma how it evicts context."* Each peer answers from its own loaded CLAUDE.md, with its own MCP servers (Linear, Sentry, etc.) already wired up.
 
-**Personas as durable peers.** Persona-plugins like [taylor-says](https://github.com/mischasigtermans/taylor-says), [raymond-says](https://github.com/mischasigtermans/raymond-says), [david-says](https://github.com/mischasigtermans/david-says), and [steve-says](https://github.com/mischasigtermans/steve-says) are stateless. One prompt, one answer, no continuity. Put each persona in its own project directory (with its own CLAUDE.md, skills, knowledge base) and register it as a Parley peer. The persona has memory now. It knows what it told you last week, knows which advice you took, can pick up the thread of a debate you started months ago.
-
 **Remote control of your fleet.** Run a Claude session in your home directory with Parley plus a Claude Channels MCP (e.g. Telegram). From your phone: *"how is the Stripe webhook fix going in stagent?"* The home session routes to stagent's agent, which reads the actual code and replies. *"Ask onoma to summarise yesterday's design doc."* Done. The whole machine becomes a remote-controllable workspace. No tab-switching, no laptop required.
 
 ## Installation
@@ -45,7 +43,7 @@ You'll see a list of candidate paths. Just say which ones to register, in plain 
 "add ~/Github/example as my-project"
 ```
 
-The `parley-awareness` skill picks up the names and calls `parley_add` for each. From then on, any session can consult them by alias:
+The `parley` skill picks up the names and calls `parley_add` for each. From then on, any session can consult them by alias:
 
 ```
 # See who's reachable
@@ -94,7 +92,7 @@ Every turn is appended to a transcript at `~/.claude/parley/logs/<peer>.md`, so 
 | `/parley clean [--dry-run]` | Remove dead sessions, dangling PID sentinels, orphan pointers |
 | `/parley status [alias]` | Show bridge state, this session's status, peer details |
 
-Day-to-day, the slash commands are escape hatches. Most of the time the `parley-awareness` skill calls the underlying MCP tools when you reference another project in plain language.
+Both the slash commands and natural-language triggers ("ask onoma about X") are handled by a single `parley` skill, which routes to the MCP tools. The slash commands are the explicit operational entry point; awareness handles the conversational case.
 
 ## MCP Tools
 
@@ -131,7 +129,8 @@ User-curated peer list. Hand-editable. `parley_add` and `parley_remove` mutate i
 | Path | What |
 |---|---|
 | `~/.claude/parley/sessions/<sid>/manifest.json` | Per-session registration with heartbeat |
-| `~/.claude/parley/sessions/<sid>/{inbox,outbox}/` | File queue for live routing |
+| `~/.claude/parley/sessions/<sid>/inbox/` | Pending messages. Subdirs: `in-progress/` (consumed but not yet responded), `read/` (responded). |
+| `~/.claude/parley/sessions/<sid>/outbox/` | Sent-message ledger |
 | `~/.claude/parley/headless/<peer>.json` | Cached headless session ID + turn count per peer |
 | `~/.claude/parley/logs/<peer>.md` | Append-only Q&A transcript per peer |
 | `~/.claude/parley/locks/<peer>.lock` | Per-peer lock to serialize concurrent asks |
@@ -146,6 +145,8 @@ What gets removed:
 - `by-claude-pid/` sentinels for processes that no longer exist
 - `.claude/parley-session` pointers in projects whose target session has been cleaned up
 - Headless caches for peers no longer in `peers.json`
+
+In addition, every 30s the listening session's heartbeat sweeps `inbox/in-progress/` and returns any message older than 10 minutes back to `inbox/` as `pending`. This guarantees at-least-once delivery: if the listener consumed a query but never called `parley_respond` (agent crashed, hit an error, hit a confused state), the next `parley_receive_next` re-delivers it. Responders should be idempotent for repeat queries.
 
 What's flagged but never auto-removed:
 - `peers.json` entries whose path doesn't exist on disk (you decide whether to `/parley remove` them)

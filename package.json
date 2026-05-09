@@ -1,7 +1,7 @@
 {
   "name": "parley",
-  "version": "0.2.0",
-  "description": "Cross-session bridge. Each project becomes a peer agent, callable from any Claude Code or Cowork session.",
+  "version": "0.2.1",
+  "description": "Cross-session peer agents for Claude Code. Ask one project what another knows, with full context and memory across turns.",
   "license": "MIT",
   "author": {
     "name": "Mischa Sigtermans"

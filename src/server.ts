@@ -7,18 +7,19 @@ import {
 import { makeContext } from './context.js';
 import { tools } from './tools/index.js';
 import { touchHeartbeat, updateManifest } from './registry/sessions.js';
-import { pruneRead } from './routing/queue.js';
+import { pruneRead, recoverStuckInProgress } from './routing/queue.js';
 import { getClaudeDriver } from './drivers/claude.js';
 import { errorMessage } from './util/errors.js';
 
 const HEARTBEAT_INTERVAL_MS = 30_000;
 const PRUNE_OLDER_THAN_MS = 24 * 60 * 60 * 1000; // 24h
+const RECOVER_STUCK_OLDER_THAN_MS = 10 * 60 * 1000; // 10m
 
 async function main() {
   const ctx = makeContext();
 
   const server = new Server(
-    { name: 'parley', version: '0.2.0' },
+    { name: 'parley', version: '0.2.1' },
     { capabilities: { tools: {} } },
   );
 
@@ -61,6 +62,7 @@ async function main() {
     if (sid) {
       touchHeartbeat(sid).catch(() => {});
       pruneRead(sid, PRUNE_OLDER_THAN_MS).catch(() => {});
+      recoverStuckInProgress(sid, RECOVER_STUCK_OLDER_THAN_MS).catch(() => {});
     }
   }, HEARTBEAT_INTERVAL_MS);
   heartbeat.unref();

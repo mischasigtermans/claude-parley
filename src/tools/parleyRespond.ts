@@ -1,5 +1,5 @@
 import type { ToolDef } from './types.js';
-import { sendMessage } from '../routing/queue.js';
+import { sendMessage, completeInProgress } from '../routing/queue.js';
 import { readManifest } from '../registry/sessions.js';
 
 export const parleyRespond: ToolDef = {
@@ -21,14 +21,16 @@ export const parleyRespond: ToolDef = {
     const manifest = await readManifest(sid);
     const fromProject = manifest?.alias ?? ctx.getCurrentProjectName();
 
+    const inReplyTo = String(args.inReplyTo);
     const id = await sendMessage({
       fromSessionId: sid,
       fromProject,
       toSessionId: String(args.toSessionId),
       type: 'response',
       content: String(args.content),
-      inReplyTo: String(args.inReplyTo),
+      inReplyTo,
     });
+    await completeInProgress(sid, inReplyTo);
     return `Sent response ${id} to ${args.toSessionId}.`;
   },
 };

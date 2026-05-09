@@ -19,7 +19,7 @@ export const parleyReceiveNext: ToolDef = {
     if (!sid) throw new Error('parley: no current session registered.');
     const timeoutMs = typeof args.timeoutMs === 'number' ? args.timeoutMs : 600_000;
 
-    const msg = await waitForMessage(sid, () => true, { timeoutMs, markRead: true });
+    const msg = await waitForMessage(sid, () => true, { timeoutMs, mark: 'in-progress' });
     if (!msg) {
       return 'TIMEOUT. No message arrived. The listen loop should call this tool again.';
     }

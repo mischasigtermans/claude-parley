@@ -18,6 +18,8 @@ export const paths = {
   sessionDir: (sid: string) => join(parleyDir(), 'sessions', sid),
   sessionManifest: (sid: string) => join(parleyDir(), 'sessions', sid, 'manifest.json'),
   sessionInbox: (sid: string) => join(parleyDir(), 'sessions', sid, 'inbox'),
+  sessionInboxInProgress: (sid: string) =>
+    join(parleyDir(), 'sessions', sid, 'inbox', 'in-progress'),
   sessionInboxRead: (sid: string) => join(parleyDir(), 'sessions', sid, 'inbox', 'read'),
   sessionOutbox: (sid: string) => join(parleyDir(), 'sessions', sid, 'outbox'),
   headlessFor: (alias: string) => join(parleyDir(), 'headless', `${alias}.json`),
