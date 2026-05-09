@@ -1,0 +1,3 @@
+{"type":"system","subtype":"init","cwd":"/tmp/proj","session_id":"sess-resumed-uuid","tools":["Read"],"model":"sonnet"}
+{"type":"assistant","message":{"id":"msg_a","type":"message","role":"assistant","content":[{"type":"text","text":"Building on what we discussed earlier."}]}}
+{"type":"result","subtype":"success","is_error":false,"duration_ms":900,"num_turns":1,"result":"Building on what we discussed earlier.","session_id":"sess-resumed-uuid","total_cost_usd":0.0005}

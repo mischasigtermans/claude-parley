@@ -1,0 +1,260 @@
+import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { writeManifest, setStatus } from '../../src/registry/sessions.js';
+import { writePeers } from '../../src/registry/peers.js';
+import { writeHeadless, readHeadless } from '../../src/registry/headless.js';
+import { paths } from '../../src/registry/paths.js';
+import { routeAsk } from '../../src/routing/router.js';
+import { _setClaudeDriverForTesting } from '../../src/drivers/claude.js';
+import { createMockDriver } from '../helpers/mock-driver.js';
+import { setup } from '../helpers/tmpdir.js';
+
+const FROM_SESSION = 'caller';
+
+async function registerCaller() {
+  await writeManifest({
+    sessionId: FROM_SESSION,
+    claudeSessionId: null,
+    projectPath: '/abs/caller',
+    projectName: 'caller',
+    alias: 'caller',
+    startedAt: new Date().toISOString(),
+    lastHeartbeat: new Date().toISOString(),
+    status: 'registered',
+    pid: 0,
+  });
+}
+
+describe('routeAsk', () => {
+  const t = setup();
+  beforeEach(async () => {
+    await t.before();
+    await registerCaller();
+  });
+  afterEach(async () => {
+    _setClaudeDriverForTesting(null);
+    await t.after();
+  });
+
+  it('throws when peer is not configured', async () => {
+    await expect(
+      routeAsk({
+        peerRef: 'ghost',
+        question: 'hi',
+        fromSessionId: FROM_SESSION,
+        fromProject: 'caller',
+      }),
+    ).rejects.toThrow(/not found/);
+  });
+
+  it('tier-2 fresh: spawns headless and caches the resulting session', async () => {
+    const mock = createMockDriver({ output: 'a1', sessionId: 'sid-fresh' });
+    _setClaudeDriverForTesting(mock);
+    await writePeers({
+      peers: { peer1: { path: '/abs/peer1' } },
+    });
+
+    const result = await routeAsk({
+      peerRef: 'peer1',
+      question: 'q1',
+      fromSessionId: FROM_SESSION,
+      fromProject: 'caller',
+    });
+
+    expect(result.tier).toBe('headless-fresh');
+    expect(result.alias).toBe('peer1');
+    expect(result.answer).toBe('a1');
+
+    const cached = await readHeadless('peer1');
+    expect(cached?.claudeSessionId).toBe('sid-fresh');
+    expect(cached?.turnCount).toBe(1);
+  });
+
+  it('tier-3 resumed: passes cached sessionId and increments turnCount', async () => {
+    const mock = createMockDriver({ output: 'a2', sessionId: 'sid-after' });
+    _setClaudeDriverForTesting(mock);
+    await writePeers({
+      peers: { peer1: { path: '/abs/peer1' } },
+    });
+    await writeHeadless({
+      alias: 'peer1',
+      claudeSessionId: 'sid-before',
+      cwd: '/abs/peer1',
+      createdAt: '2026-01-01T00:00:00Z',
+      lastUsedAt: '2026-01-01T00:00:00Z',
+      turnCount: 5,
+    });
+
+    const result = await routeAsk({
+      peerRef: 'peer1',
+      question: 'q3',
+      fromSessionId: FROM_SESSION,
+      fromProject: 'caller',
+    });
+
+    expect(result.tier).toBe('headless-resumed');
+    expect(mock.invocations[0].sessionId).toBe('sid-before');
+    const cached = await readHeadless('peer1');
+    expect(cached?.turnCount).toBe(6);
+    expect(cached?.claudeSessionId).toBe('sid-after');
+  });
+
+  it('falls back from resume → fresh when the resumed spawn throws', async () => {
+    const mock = createMockDriver({
+      output: 'recovered',
+      sessionId: 'sid-fresh-after-fail',
+      throwOn: [0],
+    });
+    _setClaudeDriverForTesting(mock);
+    await writePeers({ peers: { peer1: { path: '/abs/peer1' } } });
+    await writeHeadless({
+      alias: 'peer1',
+      claudeSessionId: 'sid-stale',
+      cwd: '/abs/peer1',
+      createdAt: '2026-01-01T00:00:00Z',
+      lastUsedAt: '2026-01-01T00:00:00Z',
+      turnCount: 1,
+    });
+
+    const result = await routeAsk({
+      peerRef: 'peer1',
+      question: 'q',
+      fromSessionId: FROM_SESSION,
+      fromProject: 'caller',
+    });
+
+    expect(result.tier).toBe('headless-fresh');
+    expect(result.answer).toBe('recovered');
+    expect(mock.invocations).toHaveLength(2);
+    expect(mock.invocations[0].sessionId).toBe('sid-stale');
+    expect(mock.invocations[1].sessionId).toBeUndefined();
+  });
+
+  it('passes per-peer model and mcpServers to the driver', async () => {
+    const mock = createMockDriver();
+    _setClaudeDriverForTesting(mock);
+    await writePeers({
+      defaults: { model: 'sonnet', mcpServers: {} },
+      peers: {
+        peer1: {
+          path: '/abs/peer1',
+          model: 'opus',
+          mcpServers: { Linear: { command: 'foo' } },
+        },
+      },
+    });
+
+    await routeAsk({
+      peerRef: 'peer1',
+      question: 'q',
+      fromSessionId: FROM_SESSION,
+      fromProject: 'caller',
+    });
+
+    expect(mock.invocations[0].model).toBe('opus');
+    expect(mock.invocations[0].mcpServers).toEqual({ Linear: { command: 'foo' } });
+  });
+
+  it('inherits model and mcpServers from defaults when peer omits them', async () => {
+    const mock = createMockDriver();
+    _setClaudeDriverForTesting(mock);
+    await writePeers({
+      defaults: { model: 'haiku', mcpServers: { foo: { command: 'bar' } } },
+      peers: { peer1: { path: '/abs/peer1' } },
+    });
+
+    await routeAsk({
+      peerRef: 'peer1',
+      question: 'q',
+      fromSessionId: FROM_SESSION,
+      fromProject: 'caller',
+    });
+
+    expect(mock.invocations[0].model).toBe('haiku');
+    expect(mock.invocations[0].mcpServers).toEqual({ foo: { command: 'bar' } });
+  });
+
+  it('default mode wraps the prompt with the concise directive; deep mode does not', async () => {
+    const mock = createMockDriver();
+    _setClaudeDriverForTesting(mock);
+    await writePeers({ peers: { peer1: { path: '/abs/peer1' } } });
+
+    await routeAsk({
+      peerRef: 'peer1',
+      question: 'literal-q',
+      fromSessionId: FROM_SESSION,
+      fromProject: 'caller',
+      mode: 'default',
+    });
+    expect(mock.invocations[0].prompt).toContain('parley directive');
+    expect(mock.invocations[0].prompt).toContain('literal-q');
+
+    mock.reset();
+    await routeAsk({
+      peerRef: 'peer1',
+      question: 'literal-q-2',
+      fromSessionId: FROM_SESSION,
+      fromProject: 'caller',
+      mode: 'deep',
+    });
+    expect(mock.invocations[0].prompt).not.toContain('parley directive');
+    expect(mock.invocations[0].prompt).toBe('literal-q-2');
+  });
+
+  it('appends the turn to the transcript after a successful spawn', async () => {
+    const mock = createMockDriver({ output: 'recorded', sessionId: 'sid-rec' });
+    _setClaudeDriverForTesting(mock);
+    await writePeers({ peers: { peer1: { path: '/abs/peer1' } } });
+
+    await routeAsk({
+      peerRef: 'peer1',
+      question: 'archive me',
+      fromSessionId: FROM_SESSION,
+      fromProject: 'caller',
+    });
+
+    const log = await readFile(paths.logFor('peer1'), 'utf8');
+    expect(log).toContain('archive me');
+    expect(log).toContain('recorded');
+    expect(log).toContain('headless-fresh');
+  });
+
+  it('requireLive throws if peer is not in listening status', async () => {
+    const mock = createMockDriver();
+    _setClaudeDriverForTesting(mock);
+    await writePeers({ peers: { peer1: { path: '/abs/peer1' } } });
+
+    await expect(
+      routeAsk({
+        peerRef: 'peer1',
+        question: 'q',
+        fromSessionId: FROM_SESSION,
+        fromProject: 'caller',
+        requireLive: true,
+      }),
+    ).rejects.toThrow(/not in listen mode/);
+  });
+
+  it('reads peers.json at most once per routeAsk', async () => {
+    const mock = createMockDriver();
+    _setClaudeDriverForTesting(mock);
+    await writePeers({
+      defaults: { model: 'sonnet' },
+      peers: { peer1: { path: '/abs/peer1' } },
+    });
+
+    const peersModule = await import('../../src/registry/peers.js');
+    const spy = vi.spyOn(peersModule, 'readPeers');
+    try {
+      await routeAsk({
+        peerRef: 'peer1',
+        question: 'q',
+        fromSessionId: FROM_SESSION,
+        fromProject: 'caller',
+      });
+      expect(spy.mock.calls.length).toBeLessThanOrEqual(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});

@@ -1,0 +1,6 @@
+[debug] starting
+some non-json output
+{"type":"system","subtype":"init","cwd":"/tmp/proj","session_id":"sess-noise-uuid"}
+not a json line either
+{"type":"result","subtype":"success","is_error":false,"result":"Final answer.","session_id":"sess-noise-uuid"}
+trailing-noise

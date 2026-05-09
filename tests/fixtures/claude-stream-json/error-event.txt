@@ -1,0 +1,2 @@
+{"type":"system","subtype":"init","cwd":"/tmp/proj","session_id":"sess-err-uuid"}
+{"type":"result","subtype":"error","is_error":true,"result":"Error: rate limit exceeded","session_id":"sess-err-uuid"}

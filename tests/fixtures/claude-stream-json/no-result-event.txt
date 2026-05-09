@@ -1,0 +1,2 @@
+{"type":"system","subtype":"init","cwd":"/tmp/proj","session_id":"sess-truncated-uuid"}
+{"type":"assistant","message":{"id":"msg_a","type":"message","role":"assistant","content":[{"type":"text","text":"Half an answer..."}]}}

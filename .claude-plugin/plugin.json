@@ -1,0 +1,10 @@
+{
+  "name": "parley",
+  "description": "Cross-session bridge. Each project becomes a peer agent, callable from any Claude Code or Cowork session.",
+  "version": "0.2.0",
+  "author": {
+    "name": "Mischa Sigtermans"
+  },
+  "repository": "https://github.com/mischasigtermans/parley",
+  "keywords": ["bridge", "multi-session", "peer-to-peer", "mcp", "multi-agent"]
+}

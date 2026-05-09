@@ -1,0 +1,61 @@
+import type { ToolDef } from './types.js';
+import { routeAsk } from '../routing/router.js';
+import { readManifest } from '../registry/sessions.js';
+
+export const parleyAsk: ToolDef = {
+  name: 'parley_ask',
+  description:
+    "Send a question to another project's Claude agent and return its answer. The peer is identified by alias (preferred, see parley_peers) or by absolute path. Routing is automatic: live-attached if the peer is in listen mode, otherwise headless (resumed if a cached session exists, fresh otherwise). Headless agents run in the peer's project directory with full CLAUDE.md, skills, and tools loaded. The peer's response is appended to a transcript log readable via parley_log.",
+  inputSchema: {
+    type: 'object',
+    properties: {
+      peer: {
+        type: 'string',
+        description: 'Peer alias (e.g. "stagent") or absolute project path. Run parley_peers to see options.',
+      },
+      question: {
+        type: 'string',
+        description: 'The full question or instruction for the peer agent. Be specific. The peer is a separate session and only sees this prompt.',
+      },
+      mode: {
+        type: 'string',
+        enum: ['default', 'deep'],
+        description:
+          '"default" (recommended): parley auto-prepends a concise directive so the peer answers fast and focused. "deep": no directive, pass through verbatim, peer is free to explore extensively. Use "deep" when you genuinely want the peer to investigate, not just answer a question.',
+      },
+      timeoutMs: {
+        type: 'number',
+        description: 'Optional. Max time to wait for the peer to respond. Default 300000 (5 min).',
+      },
+    },
+    required: ['peer', 'question'],
+    additionalProperties: false,
+  },
+  async handler(args, ctx) {
+    const peer = String(args.peer);
+    const question = String(args.question);
+    const mode = args.mode === 'deep' ? 'deep' : 'default';
+    const timeoutMs = typeof args.timeoutMs === 'number' ? args.timeoutMs : undefined;
+
+    const sid = ctx.getCurrentSessionId();
+    if (!sid) {
+      throw new Error(
+        'parley: this session is not registered. Restart Claude Code so the SessionStart hook can fire.',
+      );
+    }
+    const manifest = await readManifest(sid);
+    const fromProject = manifest?.alias ?? ctx.getCurrentProjectName();
+
+    const result = await routeAsk({
+      peerRef: peer,
+      question,
+      fromSessionId: sid,
+      fromProject,
+      fromProjectPath: manifest?.projectPath,
+      timeoutMs,
+      mode,
+    });
+
+    return `[${result.alias} via ${result.tier}${mode === 'deep' ? ' · deep' : ''}]\n\n${result.answer}`;
+  },
+};

@@ -1,0 +1,409 @@
+import { describe, it, beforeEach, afterEach, expect } from 'vitest';
+import { spawn, ChildProcessWithoutNullStreams } from 'node:child_process';
+import { mkdir, writeFile, readFile, access } from 'node:fs/promises';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { setup } from '../helpers/tmpdir.js';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const repoRoot = join(here, '..', '..');
+const serverPath = join(repoRoot, 'dist', 'server.js');
+const mockDriverPath = join(here, '..', 'helpers', 'mock-driver.cjs');
+
+const SESSION_ID = 'tt0001';
+
+interface Harness {
+  child: ChildProcessWithoutNullStreams;
+  pending: Map<number, { resolve: (v: any) => void; reject: (e: any) => void }>;
+  nextId: number;
+  send(method: string, params?: unknown): Promise<any>;
+  notify(method: string, params?: unknown): void;
+  shutdown(): Promise<void>;
+}
+
+async function startHarness(opts: { parleyDir: string; mockConfigPath?: string }): Promise<Harness> {
+  await access(serverPath); // fail fast if dist isn't built
+
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    PARLEY_DIR: opts.parleyDir,
+    PARLEY_SESSION_ID: SESSION_ID,
+    PARLEY_DRIVER_OVERRIDE: mockDriverPath,
+  };
+  if (opts.mockConfigPath) env.PARLEY_MOCK_CONFIG = opts.mockConfigPath;
+
+  const child = spawn('node', [serverPath], { stdio: ['pipe', 'pipe', 'pipe'], env });
+  const pending = new Map<number, { resolve: (v: any) => void; reject: (e: any) => void }>();
+  let nextId = 1;
+  let stdoutBuf = '';
+
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', (chunk: string) => {
+    stdoutBuf += chunk;
+    const lines = stdoutBuf.split('\n');
+    stdoutBuf = lines.pop() ?? '';
+    for (const line of lines) {
+      const t = line.trim();
+      if (!t) continue;
+      let msg: any;
+      try {
+        msg = JSON.parse(t);
+      } catch {
+        continue;
+      }
+      if (msg.id !== undefined && pending.has(msg.id)) {
+        const slot = pending.get(msg.id)!;
+        pending.delete(msg.id);
+        if (msg.error) slot.reject(new Error(msg.error.message ?? JSON.stringify(msg.error)));
+        else slot.resolve(msg.result);
+      }
+    }
+  });
+
+  child.stderr.setEncoding('utf8');
+  // child.stderr.on('data', (d) => process.stderr.write(`[server] ${d}`));
+
+  function send(method: string, params: unknown = {}): Promise<any> {
+    const id = nextId++;
+    return new Promise((resolve, reject) => {
+      pending.set(id, { resolve, reject });
+      child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
+    });
+  }
+  function notify(method: string, params: unknown = {}): void {
+    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method, params }) + '\n');
+  }
+
+  // Initialize handshake
+  await send('initialize', {
+    protocolVersion: '2024-11-05',
+    capabilities: {},
+    clientInfo: { name: 'test', version: '0' },
+  });
+  notify('notifications/initialized');
+
+  return {
+    child,
+    pending,
+    nextId,
+    send,
+    notify,
+    async shutdown() {
+      child.stdin.end();
+      try {
+        child.kill('SIGTERM');
+      } catch {}
+      await new Promise<void>((resolve) => {
+        if (child.exitCode !== null) resolve();
+        else child.once('exit', () => resolve());
+        setTimeout(() => resolve(), 1000).unref();
+      });
+    },
+  };
+}
+
+async function writeSessionManifest(parleyDir: string, sid: string, projectPath = '/abs/test') {
+  const dir = join(parleyDir, 'sessions', sid);
+  await mkdir(join(dir, 'inbox'), { recursive: true });
+  await mkdir(join(dir, 'outbox'), { recursive: true });
+  await writeFile(
+    join(dir, 'manifest.json'),
+    JSON.stringify({
+      sessionId: sid,
+      claudeSessionId: null,
+      projectPath,
+      projectName: 'test',
+      alias: 'test',
+      startedAt: new Date().toISOString(),
+      lastHeartbeat: new Date().toISOString(),
+      status: 'registered',
+      pid: 0,
+    }),
+  );
+}
+
+function callContent(result: any): string {
+  expect(result?.content?.[0]?.type).toBe('text');
+  return String(result.content[0].text);
+}
+
+describe('MCP server harness', () => {
+  const t = setup();
+  let h: Harness | null = null;
+
+  beforeEach(async () => {
+    await t.before();
+    await writeSessionManifest(t.tmp.root, SESSION_ID);
+  });
+
+  afterEach(async () => {
+    if (h) {
+      await h.shutdown();
+      h = null;
+    }
+    await t.after();
+  });
+
+  it('lists all parley tools via tools/list', async () => {
+    h = await startHarness({ parleyDir: t.tmp.root });
+    const result = await h.send('tools/list');
+    const names = (result.tools as any[]).map((t) => t.name).sort();
+    expect(names).toEqual([
+      'parley_add',
+      'parley_ask',
+      'parley_attach',
+      'parley_clean',
+      'parley_discover',
+      'parley_listen',
+      'parley_log',
+      'parley_peers',
+      'parley_receive_next',
+      'parley_remove',
+      'parley_reset',
+      'parley_respond',
+      'parley_status',
+    ]);
+  });
+
+  it('parley_peers shows discovered live sessions even when peers.json is empty', async () => {
+    await writeSessionManifest(t.tmp.root, 'other1', '/abs/other');
+    h = await startHarness({ parleyDir: t.tmp.root });
+    const result = await h.send('tools/call', {
+      name: 'parley_peers',
+      arguments: {},
+    });
+    const text = callContent(result);
+    expect(text).toMatch(/\| Peer \| Source \| Mode \| Memory \| Path \| Notes \|/);
+    expect(text).toContain('test');
+    expect(text).toMatch(/discovered/);
+  });
+
+  it('parley_peers filters out the current session', async () => {
+    h = await startHarness({ parleyDir: t.tmp.root });
+    const result = await h.send('tools/call', {
+      name: 'parley_peers',
+      arguments: {},
+    });
+    const text = callContent(result);
+    expect(text).not.toContain(SESSION_ID);
+  });
+
+  it('parley_peers includes a configured peer alongside discovered live sessions', async () => {
+    h = await startHarness({ parleyDir: t.tmp.root });
+    await h.send('tools/call', {
+      name: 'parley_add',
+      arguments: { alias: 'peer1', path: '/abs/peer1' },
+    });
+    const result = await h.send('tools/call', {
+      name: 'parley_peers',
+      arguments: {},
+    });
+    const text = callContent(result);
+    expect(text).toContain('peer1');
+    expect(text).toMatch(/\| headless \| -/);
+  });
+
+  it('parley_clean reports state and is idempotent', async () => {
+    h = await startHarness({ parleyDir: t.tmp.root });
+    await mkdir(join(t.tmp.root, 'by-claude-pid'), { recursive: true });
+    await writeFile(join(t.tmp.root, 'by-claude-pid', '999999.session'), 'x');
+
+    const first = await h.send('tools/call', { name: 'parley_clean', arguments: {} });
+    const firstText = callContent(first);
+    expect(firstText).toMatch(/Cleaned|Already clean/);
+    expect(firstText).toMatch(/Last clean:/);
+
+    const stateRaw = await readFile(join(t.tmp.root, 'state.json'), 'utf8');
+    expect(JSON.parse(stateRaw).lastCleanAt).toBeTruthy();
+
+    const second = await h.send('tools/call', { name: 'parley_clean', arguments: {} });
+    expect(callContent(second)).toMatch(/Already clean/);
+  });
+
+  it('parley_clean dryRun does not touch state.json', async () => {
+    h = await startHarness({ parleyDir: t.tmp.root });
+    const result = await h.send('tools/call', {
+      name: 'parley_clean',
+      arguments: { dryRun: true },
+    });
+    expect(callContent(result)).toMatch(/Would clean|Nothing to clean/);
+    await expect(readFile(join(t.tmp.root, 'state.json'), 'utf8')).rejects.toThrow();
+  });
+
+  it('parley_clean auto=true returns empty when last clean was recent', async () => {
+    h = await startHarness({ parleyDir: t.tmp.root });
+    await h.send('tools/call', { name: 'parley_clean', arguments: {} });
+    const second = await h.send('tools/call', {
+      name: 'parley_clean',
+      arguments: { auto: true },
+    });
+    expect(callContent(second)).toBe('');
+  });
+
+  it('parley_add → parley_remove round-trips through peers.json', async () => {
+    h = await startHarness({ parleyDir: t.tmp.root });
+    const added = await h.send('tools/call', {
+      name: 'parley_add',
+      arguments: { alias: 'foo', path: '/abs/foo' },
+    });
+    expect(callContent(added)).toMatch(/Added peer "foo"/);
+
+    const peersJson = JSON.parse(await readFile(join(t.tmp.root, 'peers.json'), 'utf8'));
+    expect(peersJson.peers.foo.path).toBe('/abs/foo');
+
+    const removed = await h.send('tools/call', {
+      name: 'parley_remove',
+      arguments: { alias: 'foo' },
+    });
+    expect(callContent(removed)).toMatch(/Removed/);
+
+    const removeAgain = await h.send('tools/call', {
+      name: 'parley_remove',
+      arguments: { alias: 'foo' },
+    });
+    expect(callContent(removeAgain)).toMatch(/No peer named/);
+  });
+
+  it('parley_ask routes to mock driver and caches the headless session', async () => {
+    const mockCfg = join(t.tmp.root, 'mock.json');
+    await writeFile(mockCfg, JSON.stringify({ output: 'mock-answer', sessionId: 'mock-sid' }));
+    h = await startHarness({ parleyDir: t.tmp.root, mockConfigPath: mockCfg });
+
+    await h.send('tools/call', {
+      name: 'parley_add',
+      arguments: { alias: 'peer1', path: '/abs/peer1' },
+    });
+    const ask = await h.send('tools/call', {
+      name: 'parley_ask',
+      arguments: { peer: 'peer1', question: 'hi' },
+    });
+    const text = callContent(ask);
+    expect(text).toMatch(/headless-fresh/);
+    expect(text).toContain('mock-answer');
+
+    const headlessJson = JSON.parse(
+      await readFile(join(t.tmp.root, 'headless', 'peer1.json'), 'utf8'),
+    );
+    expect(headlessJson.claudeSessionId).toBe('mock-sid');
+  });
+
+  it('parley_attach errors clearly when peer is not in listen mode', async () => {
+    h = await startHarness({ parleyDir: t.tmp.root });
+    await h.send('tools/call', {
+      name: 'parley_add',
+      arguments: { alias: 'peer1', path: '/abs/peer1' },
+    });
+    const result = await h.send('tools/call', {
+      name: 'parley_attach',
+      arguments: { peer: 'peer1', question: 'hi' },
+    });
+    // Tool errors come back via the result envelope (isError: true)
+    expect(result.isError).toBe(true);
+    expect(callContent(result)).toMatch(/not in listen mode/);
+  });
+
+  it('parley_listen flips this session to listening status', async () => {
+    h = await startHarness({ parleyDir: t.tmp.root });
+    const result = await h.send('tools/call', { name: 'parley_listen', arguments: {} });
+    expect(callContent(result)).toMatch(/listening for peer queries/);
+
+    const manifest = JSON.parse(
+      await readFile(join(t.tmp.root, 'sessions', SESSION_ID, 'manifest.json'), 'utf8'),
+    );
+    expect(manifest.status).toBe('listening');
+  });
+
+  it('parley_receive_next returns a TIMEOUT marker when no messages arrive', async () => {
+    h = await startHarness({ parleyDir: t.tmp.root });
+    const result = await h.send('tools/call', {
+      name: 'parley_receive_next',
+      arguments: { timeoutMs: 500 },
+    });
+    expect(callContent(result)).toMatch(/TIMEOUT/);
+  });
+
+  it('parley_respond rejects sends to an unknown session (regression)', async () => {
+    h = await startHarness({ parleyDir: t.tmp.root });
+    const result = await h.send('tools/call', {
+      name: 'parley_respond',
+      arguments: {
+        toSessionId: 'ghost',
+        inReplyTo: 'msg-fake',
+        content: 'should fail',
+      },
+    });
+    expect(result.isError).toBe(true);
+    expect(callContent(result)).toMatch(/not registered/);
+  });
+
+  it('parley_log returns empty-state when no transcript exists', async () => {
+    h = await startHarness({ parleyDir: t.tmp.root });
+    const result = await h.send('tools/call', {
+      name: 'parley_log',
+      arguments: { alias: 'peer1' },
+    });
+    expect(callContent(result)).toMatch(/No transcript yet/);
+  });
+
+  it('parley_reset is a graceful no-op when no headless cache exists', async () => {
+    h = await startHarness({ parleyDir: t.tmp.root });
+    const result = await h.send('tools/call', {
+      name: 'parley_reset',
+      arguments: { alias: 'peer1' },
+    });
+    expect(callContent(result)).toMatch(/No cached headless session/);
+  });
+
+  it('parley_status reports current session state', async () => {
+    h = await startHarness({ parleyDir: t.tmp.root });
+    const result = await h.send('tools/call', { name: 'parley_status', arguments: {} });
+    const text = callContent(result);
+    expect(text).toContain(SESSION_ID);
+    expect(text).toContain('status: registered');
+  });
+
+  it('parley_peers pluralizes turn counts correctly (regression)', async () => {
+    h = await startHarness({ parleyDir: t.tmp.root });
+    await h.send('tools/call', {
+      name: 'parley_add',
+      arguments: { alias: 'singleton', path: '/abs/singleton' },
+    });
+    await h.send('tools/call', {
+      name: 'parley_add',
+      arguments: { alias: 'plural', path: '/abs/plural' },
+    });
+
+    // Write headless records by hand with the desired turnCounts.
+    await mkdir(join(t.tmp.root, 'headless'), { recursive: true });
+    await writeFile(
+      join(t.tmp.root, 'headless', 'singleton.json'),
+      JSON.stringify({
+        alias: 'singleton',
+        claudeSessionId: 'a',
+        agent: 'claude',
+        cwd: '/abs/singleton',
+        createdAt: new Date().toISOString(),
+        lastUsedAt: new Date().toISOString(),
+        turnCount: 1,
+      }),
+    );
+    await writeFile(
+      join(t.tmp.root, 'headless', 'plural.json'),
+      JSON.stringify({
+        alias: 'plural',
+        claudeSessionId: 'b',
+        agent: 'claude',
+        cwd: '/abs/plural',
+        createdAt: new Date().toISOString(),
+        lastUsedAt: new Date().toISOString(),
+        turnCount: 7,
+      }),
+    );
+
+    const result = await h.send('tools/call', { name: 'parley_peers', arguments: {} });
+    const text = callContent(result);
+    expect(text).toContain('1 turn');
+    expect(text).not.toMatch(/\| 1 turns /);
+    expect(text).toContain('7 turns');
+  });
+});

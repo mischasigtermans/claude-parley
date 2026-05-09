@@ -1,0 +1,23 @@
+{
+  "name": "parley",
+  "version": "0.2.0",
+  "description": "Cross-session bridge. Each project becomes a peer agent, callable from any Claude Code or Cowork session.",
+  "license": "MIT",
+  "author": {
+    "name": "Mischa Sigtermans"
+  },
+  "repository": "https://github.com/mischasigtermans/parley",
+  "type": "module",
+  "scripts": {
+    "build": "bun build src/server.ts --target=node --format=esm --outfile=dist/server.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "vitest": "^4.1.5"
+  }
+}

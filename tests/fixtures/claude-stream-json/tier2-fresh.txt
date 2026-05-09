@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","cwd":"/tmp/proj","session_id":"sess-fresh-uuid","tools":["Read","Write"],"model":"sonnet"}
+{"type":"assistant","message":{"id":"msg_a","type":"message","role":"assistant","content":[{"type":"text","text":"Working on it…"}]}}
+{"type":"assistant","message":{"id":"msg_b","type":"message","role":"assistant","content":[{"type":"text","text":"Here is the answer."}]}}
+{"type":"result","subtype":"success","is_error":false,"duration_ms":1200,"num_turns":2,"result":"Here is the answer.","session_id":"sess-fresh-uuid","total_cost_usd":0.001}
