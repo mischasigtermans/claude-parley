@@ -173,9 +173,36 @@ describe('MCP server harness', () => {
       arguments: {},
     });
     const text = callContent(result);
-    expect(text).toMatch(/\| Peer \| Source \| Mode \| Memory \| Path \| Notes \|/);
+    expect(text).toMatch(/\| Peer \| Source \| Mode \| History \| Path \| Notes \|/);
     expect(text).toContain('test');
     expect(text).toMatch(/discovered/);
+  });
+
+  it('parley_peers shows one headless row per peer plus one listening row per /parley listen session', async () => {
+    // Two listening sessions plus one registered (not listening) at the same path.
+    for (const sid of ['lst001', 'lst002']) {
+      await writeSessionManifest(t.tmp.root, sid, '/abs/multi');
+      const manifestPath = join(t.tmp.root, 'sessions', sid, 'manifest.json');
+      const m = JSON.parse(await readFile(manifestPath, 'utf8'));
+      await writeFile(manifestPath, JSON.stringify({ ...m, status: 'listening' }));
+    }
+    await writeSessionManifest(t.tmp.root, 'reg001', '/abs/multi');
+
+    h = await startHarness({ parleyDir: t.tmp.root });
+    await h.send('tools/call', {
+      name: 'parley_add',
+      arguments: { alias: 'multi', path: '/abs/multi' },
+    });
+
+    const result = await h.send('tools/call', {
+      name: 'parley_peers',
+      arguments: {},
+    });
+    const text = callContent(result);
+    expect(text).toMatch(/\| multi \| [^|]+ \| headless \|/);
+    expect(text).toContain('multi:lst001');
+    expect(text).toContain('multi:lst002');
+    expect(text).toMatch(/1 active window/);
   });
 
   it('parley_peers filters out the current session', async () => {
@@ -305,7 +332,7 @@ describe('MCP server harness', () => {
   it('parley_listen flips this session to listening status', async () => {
     h = await startHarness({ parleyDir: t.tmp.root });
     const result = await h.send('tools/call', { name: 'parley_listen', arguments: {} });
-    expect(callContent(result)).toMatch(/listening for peer queries/);
+    expect(callContent(result)).toMatch(/Listening as test:/);
 
     const manifest = JSON.parse(
       await readFile(join(t.tmp.root, 'sessions', SESSION_ID, 'manifest.json'), 'utf8'),

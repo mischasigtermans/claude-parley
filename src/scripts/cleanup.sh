@@ -7,16 +7,9 @@ set -euo pipefail
 command -v jq >/dev/null 2>&1 || exit 0
 
 PARLEY_DIR="${PARLEY_DIR:-$HOME/.claude/parley}"
-PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
-POINTER="$PROJECT_DIR/.claude/parley-session"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-[ -f "$POINTER" ] || exit 0
-SESSION_ID="$(cat "$POINTER")"
-SESSION_DIR="$PARLEY_DIR/sessions/$SESSION_ID"
-[ -d "$SESSION_DIR" ] || { rm -f "$POINTER"; exit 0; }
-
-# Find Claude Code's PID (same walk as register.sh) and clear its sentinel.
+# Find Claude Code's PID (same walk as register.sh) and read its sentinel.
 find_claude_pid() {
   local pid=$$
   local i
@@ -33,9 +26,16 @@ find_claude_pid() {
   return 1
 }
 CLAUDE_PID="$(find_claude_pid 2>/dev/null || true)"
-if [ -n "$CLAUDE_PID" ]; then
-  rm -f "$PARLEY_DIR/by-claude-pid/$CLAUDE_PID.session"
-fi
+[ -n "$CLAUDE_PID" ] || exit 0
+
+SENTINEL="$PARLEY_DIR/by-claude-pid/$CLAUDE_PID.session"
+[ -f "$SENTINEL" ] || exit 0
+SESSION_ID="$(cat "$SENTINEL")"
+SESSION_DIR="$PARLEY_DIR/sessions/$SESSION_ID"
+
+rm -f "$SENTINEL"
+
+[ -d "$SESSION_DIR" ] || exit 0
 
 # Notify connected peers (those who've pinged us) that we're going away.
 if [ -d "$SESSION_DIR/inbox" ]; then
@@ -47,4 +47,3 @@ if [ -d "$SESSION_DIR/inbox" ]; then
 fi
 
 rm -rf "$SESSION_DIR"
-rm -f "$POINTER"

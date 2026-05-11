@@ -1,4 +1,4 @@
-import { readdir, readFile, rm, stat, unlink } from 'node:fs/promises';
+import { readdir, rm, stat, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { paths, expandHome } from '../registry/paths.js';
 import { isProcessAlive, readManifest } from '../registry/sessions.js';
@@ -10,7 +10,6 @@ const HEARTBEAT_DEAD_MS = 60 * 60 * 1000;
 export interface SweepRemoved {
   sessions: string[];
   sentinels: string[];
-  pointers: string[];
   headless: string[];
   killed: number[];
 }
@@ -21,35 +20,38 @@ export interface SweepResult {
   dryRun: boolean;
 }
 
-export async function sweep(opts: { dryRun?: boolean } = {}): Promise<SweepResult> {
+export type SweepScope = 'full' | 'sentinels-only';
+
+export async function sweep(
+  opts: { dryRun?: boolean; scope?: SweepScope } = {},
+): Promise<SweepResult> {
   const dryRun = opts.dryRun === true;
-  const removed: SweepRemoved = { sessions: [], sentinels: [], pointers: [], headless: [], killed: [] };
+  const scope = opts.scope ?? 'full';
+  const removed: SweepRemoved = { sessions: [], sentinels: [], headless: [], killed: [] };
   const advisories: string[] = [];
+
+  if (scope === 'sentinels-only') {
+    await sweepSentinels(removed, dryRun);
+    return { removed, advisories, dryRun };
+  }
 
   const peersFile = await readPeers();
   const peerAliases = new Set(Object.keys(peersFile.peers));
 
-  const survivors = await sweepSessions(removed, dryRun);
+  await sweepSessions(removed, dryRun);
   await sweepSentinels(removed, dryRun);
-  await sweepPointers(survivors, peersFile.peers, removed, dryRun);
   await sweepHeadless(peerAliases, removed, dryRun);
   await collectAdvisories(peersFile.peers, advisories);
 
   return { removed, advisories, dryRun };
 }
 
-interface Survivor {
-  sid: string;
-  projectPath: string;
-}
-
-async function sweepSessions(removed: SweepRemoved, dryRun: boolean): Promise<Survivor[]> {
-  const survivors: Survivor[] = [];
+async function sweepSessions(removed: SweepRemoved, dryRun: boolean): Promise<void> {
   let entries: string[];
   try {
     entries = await readdir(paths.sessionsDir);
   } catch (err) {
-    if (isErrnoException(err) && err.code === 'ENOENT') return survivors;
+    if (isErrnoException(err) && err.code === 'ENOENT') return;
     throw err;
   }
   const now = Date.now();
@@ -73,11 +75,8 @@ async function sweepSessions(removed: SweepRemoved, dryRun: boolean): Promise<Su
       }
       if (!dryRun) await rm(paths.sessionDir(sid), { recursive: true, force: true });
       removed.sessions.push(sid);
-    } else {
-      survivors.push({ sid: manifest.sessionId, projectPath: manifest.projectPath });
     }
   }
-  return survivors;
 }
 
 async function sweepSentinels(removed: SweepRemoved, dryRun: boolean): Promise<void> {
@@ -94,30 +93,6 @@ async function sweepSentinels(removed: SweepRemoved, dryRun: boolean): Promise<v
     if (!Number.isFinite(pid) || isProcessAlive(pid)) continue;
     if (!dryRun) await unlink(join(paths.byClaudePidDir, file)).catch(() => {});
     removed.sentinels.push(file);
-  }
-}
-
-async function sweepPointers(
-  survivors: Survivor[],
-  peers: Record<string, { path: string }>,
-  removed: SweepRemoved,
-  dryRun: boolean,
-): Promise<void> {
-  const survivingSids = new Set(survivors.map((s) => s.sid));
-  const candidates = new Set<string>(survivors.map((s) => s.projectPath));
-  for (const cfg of Object.values(peers)) candidates.add(expandHome(cfg.path));
-
-  for (const projectPath of candidates) {
-    const pointer = join(projectPath, '.claude', 'parley-session');
-    let sid: string;
-    try {
-      sid = (await readFile(pointer, 'utf8')).trim();
-    } catch {
-      continue;
-    }
-    if (!sid || survivingSids.has(sid)) continue;
-    if (!dryRun) await unlink(pointer).catch(() => {});
-    removed.pointers.push(pointer);
   }
 }
 

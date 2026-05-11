@@ -5,6 +5,7 @@ import { isErrnoException } from '../util/errors.js';
 
 export interface ParleyState {
   lastCleanAt?: string;
+  lastAutoSweepAt?: string;
 }
 
 export async function readState(): Promise<ParleyState> {
@@ -18,7 +19,9 @@ export async function readState(): Promise<ParleyState> {
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     const lastCleanAt = typeof parsed.lastCleanAt === 'string' ? parsed.lastCleanAt : undefined;
-    return { lastCleanAt };
+    const lastAutoSweepAt =
+      typeof parsed.lastAutoSweepAt === 'string' ? parsed.lastAutoSweepAt : undefined;
+    return { lastCleanAt, lastAutoSweepAt };
   } catch {
     return {};
   }

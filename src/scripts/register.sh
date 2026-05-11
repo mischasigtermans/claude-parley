@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # register.sh — Register this Claude Code session as a Parley peer.
-# Called by SessionStart hook. Idempotent: reuses an existing parley-session
-# pointer in $PROJECT_DIR/.claude/parley-session if present and valid.
+# Called by SessionStart hook. Each Claude process gets a fresh session ID;
+# multiple Claude windows opened in the same project are independent peers.
 # Outputs the 6-char parley session ID on stdout.
 set -euo pipefail
 
@@ -12,7 +12,6 @@ command -v jq >/dev/null 2>&1 || {
 
 PARLEY_DIR="${PARLEY_DIR:-$HOME/.claude/parley}"
 PROJECT_DIR="${PROJECT_DIR:-${CLAUDE_PROJECT_DIR:-$(pwd)}}"
-POINTER="$PROJECT_DIR/.claude/parley-session"
 
 # Detect platform + mode. Mirrors Anthropic's vocabulary from
 # https://code.claude.com/docs/en/platforms (platform = cli, desktop, ...).
@@ -38,7 +37,7 @@ if [ "$PLATFORM/$MODE" = "desktop/cowork" ]; then
   COWORK_SHORT=$(echo "$COWORK_LOCAL" | tr -d '-' | tail -c 7 | head -c 6)
   PROJECT_NAME="cowork-$COWORK_SHORT"
 else
-  PROJECT_NAME="$(basename "$PROJECT_DIR")"
+  PROJECT_NAME="$(basename "$PROJECT_DIR" | tr '[:upper:]' '[:lower:]')"
 fi
 
 mkdir -p "$PARLEY_DIR/sessions" "$PARLEY_DIR/by-claude-pid"
@@ -64,33 +63,6 @@ find_claude_pid() {
 CLAUDE_PID="$(find_claude_pid 2>/dev/null || true)"
 
 now() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
-
-# Serialize concurrent registrations of the same project. Two MCPs starting
-# in the same dir at nearly the same instant must not both write a fresh
-# session id. Per-project lock so different projects can register in parallel.
-mkdir -p "$PARLEY_DIR/locks"
-LOCK_KEY="$(echo "$PROJECT_DIR" | sed 's|/|_|g')"
-LOCK_FILE="$PARLEY_DIR/locks/register-$LOCK_KEY.lock"
-exec 200>"$LOCK_FILE"
-if command -v flock >/dev/null 2>&1; then
-  flock 200
-fi
-
-# Reuse existing registration if pointer exists and target manifest is intact.
-if [ -f "$POINTER" ]; then
-  EXISTING_ID="$(cat "$POINTER")"
-  EXISTING_MANIFEST="$PARLEY_DIR/sessions/$EXISTING_ID/manifest.json"
-  if [ -f "$EXISTING_MANIFEST" ]; then
-    TMP="$(mktemp "$PARLEY_DIR/sessions/$EXISTING_ID/manifest.XXXXXX")"
-    jq --arg hb "$(now)" '.lastHeartbeat = $hb' "$EXISTING_MANIFEST" > "$TMP"
-    mv "$TMP" "$EXISTING_MANIFEST"
-    if [ -n "$CLAUDE_PID" ]; then
-      printf '%s' "$EXISTING_ID" > "$PARLEY_DIR/by-claude-pid/$CLAUDE_PID.session"
-    fi
-    printf '%s' "$EXISTING_ID"
-    exit 0
-  fi
-fi
 
 # Generate fresh 6-char session ID.
 SESSION_ID="$(set +o pipefail; LC_ALL=C tr -dc 'a-z0-9' < /dev/urandom | head -c 6)"
@@ -128,15 +100,6 @@ jq -n \
     pid: $pid
   }' > "$TMP"
 mv "$TMP" "$SESSION_DIR/manifest.json"
-
-mkdir -p "$PROJECT_DIR/.claude"
-printf '%s' "$SESSION_ID" > "$POINTER"
-
-# Make sure the pointer file is git-ignored so it isn't accidentally committed.
-GITIGNORE="$PROJECT_DIR/.claude/.gitignore"
-if [ ! -f "$GITIGNORE" ] || ! grep -qxF 'parley-session' "$GITIGNORE" 2>/dev/null; then
-  printf '%s\n' 'parley-session' >> "$GITIGNORE"
-fi
 
 # Write a PID-keyed sentinel so the MCP server can find us regardless of cwd.
 if [ -n "$CLAUDE_PID" ]; then

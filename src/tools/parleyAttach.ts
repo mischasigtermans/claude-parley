@@ -5,11 +5,11 @@ import { readManifest } from '../registry/sessions.js';
 export const parleyAttach: ToolDef = {
   name: 'parley_attach',
   description:
-    "Like parley_ask, but FAILS if the peer is not currently in /parley listen mode. Use only when the user explicitly wants the live, in-window flow (so they can see the conversation in the peer's Claude Code window in real time) and would rather get an error than a silent fall-back to headless.",
+    "Like parley_ask, but FAILS if the peer is not currently in /parley listen mode. Use only when the user explicitly wants the live, in-window flow (so they can see the conversation in the peer's Claude Code window in real time) and would rather get an error than a silent fall-back to headless. Supports alias:sid to target a specific listening session.",
   inputSchema: {
     type: 'object',
     properties: {
-      peer: { type: 'string', description: 'Peer alias or path.' },
+      peer: { type: 'string', description: 'Peer alias, alias:sid for a specific listening session, or absolute path.' },
       question: { type: 'string', description: 'Question to send.' },
       timeoutMs: { type: 'number', description: 'Max wait for response. Default 120000.' },
     },

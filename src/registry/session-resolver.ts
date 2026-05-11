@@ -1,14 +1,9 @@
 import { execFileSync, ExecSyncOptionsWithStringEncoding } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
 import { paths } from './paths.js';
 import { isErrnoException } from '../util/errors.js';
 
-export type ResolveVia =
-  | 'env'
-  | 'pid-sentinel'
-  | 'parent-cwd-walk'
-  | 'cwd-walk';
+export type ResolveVia = 'env' | 'pid-sentinel';
 
 export interface ResolveResult {
   sid: string;
@@ -16,8 +11,6 @@ export interface ResolveResult {
 }
 
 export interface ResolveInput {
-  /** Override for the cwd to walk from. Defaults to `process.cwd()`. */
-  cwd?: string;
   /** Override for the parent process PID. Defaults to `process.ppid`. */
   ppid?: number;
   /** Override for the env var. Defaults to `process.env.PARLEY_SESSION_ID`. */
@@ -28,7 +21,6 @@ const EXEC_TIMEOUT_MS = 1000;
 
 /** Top-level resolver: walks all known strategies and returns the first hit. */
 export function resolveSession(input: ResolveInput = {}): ResolveResult | null {
-  const cwd = input.cwd ?? process.cwd();
   const ppid = input.ppid ?? process.ppid;
   const envSid = input.envSid ?? process.env.PARLEY_SESSION_ID ?? null;
 
@@ -39,34 +31,7 @@ export function resolveSession(input: ResolveInput = {}): ResolveResult | null {
   const fromSentinel = readPidSentinel(ppid);
   if (fromSentinel) return { sid: fromSentinel, via: 'pid-sentinel' };
 
-  // parent-cwd-walk runs first because the MCP's own cwd is unreliable
-  // (Claude Code typically spawns MCP children at $HOME or /, which would
-  // poach onto a home-dir pointer). The parent claude CLI's cwd is the
-  // user's actual project directory.
-  const ppCwd = parentCwd(ppid);
-  if (ppCwd) {
-    const fromParent = walkForPointer(ppCwd);
-    if (fromParent) return { sid: fromParent, via: 'parent-cwd-walk' };
-  }
-
-  const fromCwd = walkForPointer(cwd);
-  if (fromCwd) return { sid: fromCwd, via: 'cwd-walk' };
-
   return null;
-}
-
-export function walkForPointer(start: string): string | null {
-  let dir = start;
-  while (true) {
-    const pointer = join(dir, '.claude', 'parley-session');
-    if (existsSync(pointer)) {
-      const sid = readFileSync(pointer, 'utf8').trim();
-      if (sid && existsSync(paths.sessionManifest(sid))) return sid;
-    }
-    const parent = dirname(dir);
-    if (parent === dir) return null;
-    dir = parent;
-  }
 }
 
 export function parentCwd(ppid: number): string | null {

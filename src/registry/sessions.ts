@@ -106,3 +106,13 @@ export async function findLiveByPath(projectPath: string): Promise<SessionManife
   const live = await listLiveSessions();
   return live.find((s) => s.projectPath === projectPath) ?? null;
 }
+
+export async function listLiveByPath(projectPath: string): Promise<SessionManifest[]> {
+  const live = await listLiveSessions();
+  return live.filter((s) => s.projectPath === projectPath);
+}
+
+export async function findListeningByPath(projectPath: string): Promise<SessionManifest[]> {
+  const live = await listLiveSessions();
+  return live.filter((s) => s.projectPath === projectPath && s.status === 'listening');
+}

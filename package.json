@@ -1,6 +1,6 @@
 {
   "name": "parley",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Cross-session peer agents for Claude Code. Ask one project what another knows, with full context and memory across turns.",
   "license": "MIT",
   "author": {

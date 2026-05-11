@@ -5,13 +5,13 @@ import { readManifest } from '../registry/sessions.js';
 export const parleyAsk: ToolDef = {
   name: 'parley_ask',
   description:
-    "Send a question to another project's Claude agent and return its answer. The peer is identified by alias (preferred, see parley_peers) or by absolute path. Routing is automatic: live-attached if the peer is in listen mode, otherwise headless (resumed if a cached session exists, fresh otherwise). Headless agents run in the peer's project directory with full CLAUDE.md, skills, and tools loaded. The peer's response is appended to a transcript log readable via parley_log.",
+    "Send a question to another project's Claude agent and return its answer. The peer is identified by alias (preferred, see parley_peers), by absolute path, or by alias:sid to target a specific listening session. Routing is automatic: live if exactly one /parley listen session matches, otherwise headless (resumed if a cached session exists, fresh otherwise). With 2+ listening sessions and no :sid, parley returns an error listing the available sids so you can retry with the explicit suffix. Headless agents run in the peer's project directory with full CLAUDE.md, skills, and tools loaded. The peer's response is appended to a transcript log readable via parley_log.",
   inputSchema: {
     type: 'object',
     properties: {
       peer: {
         type: 'string',
-        description: 'Peer alias (e.g. "stagent") or absolute project path. Run parley_peers to see options.',
+        description: 'Peer alias (e.g. "stagent"), alias:sid for a specific listening session (e.g. "onoma:a6v9lk"), or absolute project path. Run parley_peers to see options.',
       },
       question: {
         type: 'string',

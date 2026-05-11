@@ -23,7 +23,7 @@ export function makeContext(): ParleyContext {
 
   function resolve(): ResolveResult | null {
     if (cached && existsSync(paths.sessionManifest(cached.sid))) return cached;
-    cached = resolveSession({ cwd });
+    cached = resolveSession();
     return cached;
   }
 

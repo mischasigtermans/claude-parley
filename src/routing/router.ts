@@ -5,7 +5,12 @@ import {
   readPeers,
   resolvePeerConfigFromFile,
 } from '../registry/peers.js';
-import { findLiveByPath, listLiveSessions, SessionManifest } from '../registry/sessions.js';
+import {
+  findListeningByPath,
+  listLiveSessions,
+  readManifest,
+  SessionManifest,
+} from '../registry/sessions.js';
 import { readHeadless, writeHeadless, HeadlessRecord } from '../registry/headless.js';
 import { withLock } from '../registry/locks.js';
 import { paths, expandHome } from '../registry/paths.js';
@@ -49,21 +54,37 @@ export async function routeAsk(input: AskInput): Promise<AskResult> {
     );
   }
 
-  if (input.fromProjectPath && expandHome(peer.config.path) === input.fromProjectPath) {
+  if (peer.sessionId && peer.sessionId === input.fromSessionId) {
     throw new Error(
-      `parley: "${peer.alias}" resolves to the current session. You cannot ask yourself. Use the current session's tools directly.`,
+      `parley: "${input.peerRef}" is this session. You cannot ask yourself. Use the current session's tools directly.`,
     );
   }
 
   const resolved = resolvePeerConfigFromFile(peer.alias, peersFile);
-  const live = await findListeningPeer(peer.alias, peer.config);
-  if (live) {
+  const live = await resolveListening(peer.alias, peer.config, peer.sessionId, input.fromSessionId);
+  if (live.kind === 'single') {
     const answer = await routeLive({
       ...input,
-      target: live,
+      target: live.session,
     });
     await appendTurn(peer.alias, input.fromProject, input.question, answer, 'live');
     return { alias: peer.alias, tier: 'live', answer };
+  }
+  if (live.kind === 'multiple') {
+    const sids = live.sessions.map((s) => `${peer.alias}:${s.sessionId}`).join(', ');
+    throw new Error(
+      `parley: ${live.sessions.length} listening sessions for "${peer.alias}". Retry with one of: ${sids}. Or omit the suffix to use headless.`,
+    );
+  }
+  if (live.kind === 'sid-not-found') {
+    throw new Error(
+      `parley: no live session "${live.sessionId}" for peer "${peer.alias}". Check parley_peers for current sids.`,
+    );
+  }
+  if (live.kind === 'sid-not-listening') {
+    throw new Error(
+      `parley: session "${live.session.sessionId}" exists but is not in listen mode. Run /parley listen in that window, or ask "${peer.alias}" without the :sid suffix to use headless.`,
+    );
   }
 
   if (input.requireLive) {
@@ -130,31 +151,58 @@ export async function routeAsk(input: AskInput): Promise<AskResult> {
 async function resolvePeer(
   ref: string,
   peersFile: PeersFile,
-): Promise<{ alias: string; config: PeerConfig } | null> {
-  const direct = findPeerInFile(ref, peersFile);
-  if (direct) return direct;
+): Promise<{ alias: string; config: PeerConfig; sessionId?: string } | null> {
+  const colonIdx = ref.indexOf(':');
+  const aliasPart = colonIdx >= 0 ? ref.slice(0, colonIdx) : ref;
+  const sessionId = colonIdx >= 0 ? ref.slice(colonIdx + 1).trim() : undefined;
+
+  const direct = findPeerInFile(aliasPart, peersFile);
+  if (direct) return { ...direct, sessionId: sessionId || undefined };
 
   const live = await listLiveSessions();
   const match = live.find(
-    (s) => s.alias === ref || s.projectName === ref || s.projectPath === expandHome(ref),
+    (s) => s.alias === aliasPart || s.projectName === aliasPart || s.projectPath === expandHome(aliasPart),
   );
   if (match) {
     return {
       alias: match.alias,
       config: { path: match.projectPath },
+      sessionId: sessionId || undefined,
     };
   }
   return null;
 }
 
-async function findListeningPeer(
-  alias: string,
+type ListeningResolution =
+  | { kind: 'single'; session: SessionManifest }
+  | { kind: 'multiple'; sessions: SessionManifest[] }
+  | { kind: 'none' }
+  | { kind: 'sid-not-found'; sessionId: string }
+  | { kind: 'sid-not-listening'; session: SessionManifest };
+
+async function resolveListening(
+  _alias: string,
   config: PeerConfig,
-): Promise<SessionManifest | null> {
+  sessionId: string | undefined,
+  fromSessionId: string,
+): Promise<ListeningResolution> {
   const target = expandHome(config.path);
-  const live = await findLiveByPath(target);
-  if (!live) return null;
-  return live.status === 'listening' ? live : null;
+  if (sessionId) {
+    const manifest = await readManifest(sessionId);
+    if (!manifest || manifest.projectPath !== target) {
+      return { kind: 'sid-not-found', sessionId };
+    }
+    if (manifest.status !== 'listening') {
+      return { kind: 'sid-not-listening', session: manifest };
+    }
+    return { kind: 'single', session: manifest };
+  }
+  const sessions = (await findListeningByPath(target)).filter(
+    (s) => s.sessionId !== fromSessionId,
+  );
+  if (sessions.length === 0) return { kind: 'none' };
+  if (sessions.length === 1) return { kind: 'single', session: sessions[0] };
+  return { kind: 'multiple', sessions };
 }
 
 async function routeLive(opts: {

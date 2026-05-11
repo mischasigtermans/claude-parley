@@ -1,5 +1,5 @@
 import { describe, it, beforeEach, afterEach, expect } from 'vitest';
-import { mkdir, writeFile, readFile, stat } from 'node:fs/promises';
+import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { sweep } from '../../src/cleanup/sweep.js';
 import { writeManifest, readManifest, type SessionManifest } from '../../src/registry/sessions.js';
@@ -75,34 +75,6 @@ describe('sweep', () => {
     expect(result.removed.sentinels).not.toContain(`${process.pid}.session`);
   });
 
-  it('removes orphaned project pointers', async () => {
-    const projectDir = join(t.tmp.root, 'fakeproject');
-    const claudeDir = join(projectDir, '.claude');
-    await mkdir(claudeDir, { recursive: true });
-    const pointer = join(claudeDir, 'parley-session');
-    await writeFile(pointer, 'ghost1');
-
-    await writePeers({ peers: { fake: { path: projectDir } } });
-
-    const result = await sweep();
-    expect(result.removed.pointers).toContain(pointer);
-    await expect(stat(pointer)).rejects.toThrow();
-  });
-
-  it('keeps pointers whose target session is alive', async () => {
-    const projectDir = join(t.tmp.root, 'liveproject');
-    await mkdir(join(projectDir, '.claude'), { recursive: true });
-    const pointer = join(projectDir, '.claude', 'parley-session');
-    await writeFile(pointer, 'live01');
-    await writeManifest(manifest({ sessionId: 'live01', pid: process.pid, projectPath: projectDir }));
-    await writePeers({ peers: { live: { path: projectDir } } });
-
-    const result = await sweep();
-    expect(result.removed.pointers).not.toContain(pointer);
-    const stillThere = await readFile(pointer, 'utf8');
-    expect(stillThere).toBe('live01');
-  });
-
   it('removes headless caches for aliases not in peers.json', async () => {
     await writePeers({ peers: { keeper: { path: process.cwd() } } });
     await writeHeadless({
@@ -155,7 +127,17 @@ describe('sweep', () => {
     const second = await sweep();
     expect(second.removed.sessions).toEqual([]);
     expect(second.removed.sentinels).toEqual([]);
-    expect(second.removed.pointers).toEqual([]);
     expect(second.removed.headless).toEqual([]);
+  });
+
+  it('sentinels-only scope only sweeps the PID sentinel directory', async () => {
+    await writeManifest(manifest({ sessionId: 'gone', pid: 999_999, lastHeartbeat: TWO_HOURS_AGO() }));
+    await mkdir(paths.byClaudePidDir, { recursive: true });
+    await writeFile(join(paths.byClaudePidDir, '999999.session'), 'x');
+
+    const result = await sweep({ scope: 'sentinels-only' });
+    expect(result.removed.sessions).toEqual([]);
+    expect(result.removed.sentinels).toContain('999999.session');
+    expect(await readManifest('gone')).not.toBeNull();
   });
 });

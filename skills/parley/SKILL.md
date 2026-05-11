@@ -43,13 +43,14 @@ Then run the *ask sequence*.
 
 ## Actions
 
-Parse the argument the user supplied with `/parley` (or the operational request) and dispatch.
+**Before any action below**, call `parley_clean({auto: true})`. If the result is non-empty, print it as a header. The server enforces a 1-hour cooldown, so most calls no-op silently.
+
+Then parse the argument the user supplied with `/parley` (or the operational request) and dispatch.
 
 ### `(no argument)`: discovery menu
 
-1. Call `parley_clean` with `auto: true`. If the result is non-empty, print it as a header.
-2. Call `parley_peers`. Print the result.
-3. Branch on whether peers exist:
+1. Call `parley_peers`. Print the result.
+2. Branch on whether peers exist:
 
 **If no peers are registered AND no live sessions discovered**, print the first-run guide:
    ```
@@ -154,8 +155,8 @@ Once you have a confirmed peer alias and a user question:
 
 Make this session the live answerer for its project, then run the receive loop.
 
-1. Call `parley_listen`. Print the confirmation.
-2. Tell the user: *"Listening for peer messages... (press Escape to interrupt)"*
+1. Call `parley_listen`. Its return value contains the addressable form `alias:sid` for this session — print that line verbatim so the user can copy the sid.
+2. Tell the user: *"Listening for peer messages as `<alias:sid>`... (press Escape to interrupt)"* — substitute the actual `alias:sid` from step 1's return.
 3. Enter the loop:
    1. Call `parley_receive_next` (this BLOCKS until a message arrives).
    2. Parse the output: lines before `---` are headers (`MESSAGE_ID`, `FROM_ID`, `TO_ID`, `FROM_PROJECT`, `TYPE`, `IN_REPLY_TO`); lines after are the content.

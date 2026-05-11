@@ -219,6 +219,126 @@ describe('routeAsk', () => {
     expect(log).toContain('headless-fresh');
   });
 
+  it('routes live when exactly one listening session matches the peer path', async () => {
+    const mock = createMockDriver();
+    _setClaudeDriverForTesting(mock);
+    await writePeers({ peers: { peer1: { path: '/abs/peer1' } } });
+    await writeManifest({
+      sessionId: 'listen1',
+      claudeSessionId: null,
+      projectPath: '/abs/peer1',
+      projectName: 'peer1',
+      alias: 'peer1',
+      startedAt: new Date().toISOString(),
+      lastHeartbeat: new Date().toISOString(),
+      status: 'registered',
+      pid: process.pid,
+    });
+    await setStatus('listen1', 'listening');
+
+    const ask = routeAsk({
+      peerRef: 'peer1',
+      question: 'q',
+      fromSessionId: FROM_SESSION,
+      fromProject: 'caller',
+      timeoutMs: 50,
+    });
+    await expect(ask).rejects.toThrow(/did not respond/);
+  });
+
+  it('bare alias with 2+ listening sessions throws a multi-listener error', async () => {
+    await writePeers({ peers: { peer1: { path: '/abs/peer1' } } });
+    for (const sid of ['lstn1a', 'lstn1b']) {
+      await writeManifest({
+        sessionId: sid,
+        claudeSessionId: null,
+        projectPath: '/abs/peer1',
+        projectName: 'peer1',
+        alias: 'peer1',
+        startedAt: new Date().toISOString(),
+        lastHeartbeat: new Date().toISOString(),
+        status: 'registered',
+        pid: process.pid,
+      });
+      await setStatus(sid, 'listening');
+    }
+
+    await expect(
+      routeAsk({
+        peerRef: 'peer1',
+        question: 'q',
+        fromSessionId: FROM_SESSION,
+        fromProject: 'caller',
+      }),
+    ).rejects.toThrow(/2 listening sessions for "peer1".*lstn1a.*lstn1b/);
+  });
+
+  it('alias:sid routes to the named listening session', async () => {
+    const mock = createMockDriver();
+    _setClaudeDriverForTesting(mock);
+    await writePeers({ peers: { peer1: { path: '/abs/peer1' } } });
+    for (const sid of ['lstn1a', 'lstn1b']) {
+      await writeManifest({
+        sessionId: sid,
+        claudeSessionId: null,
+        projectPath: '/abs/peer1',
+        projectName: 'peer1',
+        alias: 'peer1',
+        startedAt: new Date().toISOString(),
+        lastHeartbeat: new Date().toISOString(),
+        status: 'registered',
+        pid: process.pid,
+      });
+      await setStatus(sid, 'listening');
+    }
+
+    const ask = routeAsk({
+      peerRef: 'peer1:lstn1b',
+      question: 'q',
+      fromSessionId: FROM_SESSION,
+      fromProject: 'caller',
+      timeoutMs: 50,
+    });
+    await expect(ask).rejects.toThrow(/did not respond/);
+  });
+
+  it('alias:sid throws when the named session is not listening', async () => {
+    await writePeers({ peers: { peer1: { path: '/abs/peer1' } } });
+    await writeManifest({
+      sessionId: 'lstn1a',
+      claudeSessionId: null,
+      projectPath: '/abs/peer1',
+      projectName: 'peer1',
+      alias: 'peer1',
+      startedAt: new Date().toISOString(),
+      lastHeartbeat: new Date().toISOString(),
+      status: 'registered',
+      pid: process.pid,
+    });
+
+    await expect(
+      routeAsk({
+        peerRef: 'peer1:lstn1a',
+        question: 'q',
+        fromSessionId: FROM_SESSION,
+        fromProject: 'caller',
+      }),
+    ).rejects.toThrow(/is not in listen mode/);
+  });
+
+  it('alias:sid throws when the named session does not exist for that path', async () => {
+    await writePeers({ peers: { peer1: { path: '/abs/peer1' } } });
+
+    await expect(
+      routeAsk({
+        peerRef: 'peer1:ghostt',
+        question: 'q',
+        fromSessionId: FROM_SESSION,
+        fromProject: 'caller',
+      }),
+    ).rejects.toThrow(/no live session "ghostt"/);
+  });
+
   it('requireLive throws if peer is not in listening status', async () => {
     const mock = createMockDriver();
     _setClaudeDriverForTesting(mock);

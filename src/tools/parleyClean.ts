@@ -2,12 +2,12 @@ import type { ToolDef } from './types.js';
 import { sweep, type SweepResult } from '../cleanup/sweep.js';
 import { readState, touchLastClean } from '../registry/state.js';
 
-const CLEAN_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
+const CLEAN_INTERVAL_MS = 60 * 60 * 1000;
 
 export const parleyClean: ToolDef = {
   name: 'parley_clean',
   description:
-    'Remove stale Parley state on this machine: dead session manifests, dangling PID sentinels, orphaned project pointers, and headless caches for peers that are no longer registered. peers.json entries with missing paths are flagged but never auto-removed. Idempotent. Use dryRun to preview without modifying anything. Use auto=true to no-op when the last clean ran less than 7 days ago (used by the /parley discovery menu).',
+    'Remove stale Parley state on this machine: dead session manifests, dangling PID sentinels, and headless caches for peers that are no longer registered. peers.json entries with missing paths are flagged but never auto-removed. Idempotent. Use dryRun to preview without modifying anything. Use auto=true to no-op when the last clean ran less than 1 hour ago (called at the top of every /parley action).',
   inputSchema: {
     type: 'object',
     properties: {
@@ -18,7 +18,7 @@ export const parleyClean: ToolDef = {
       auto: {
         type: 'boolean',
         description:
-          'If true, skip the sweep when state.json.lastCleanAt is younger than 7 days. Returns an empty string in that case.',
+          'If true, skip the sweep when state.json.lastCleanAt is younger than 1 hour. Returns an empty string in that case.',
       },
     },
     additionalProperties: false,
@@ -53,7 +53,6 @@ function countRemoved(result: SweepResult): number {
   return (
     result.removed.sessions.length +
     result.removed.sentinels.length +
-    result.removed.pointers.length +
     result.removed.headless.length +
     result.removed.killed.length
   );
@@ -77,10 +76,6 @@ function formatReport(result: SweepResult, totalRemoved: number, now: Date): str
     if (result.removed.sentinels.length > 0) {
       lines.push(`  • ${result.removed.sentinels.length} dead PID sentinel(s)`);
     }
-    if (result.removed.pointers.length > 0) {
-      lines.push(`  • ${result.removed.pointers.length} orphaned project pointer(s)`);
-      for (const p of result.removed.pointers) lines.push(`      ${p}`);
-    }
     if (result.removed.headless.length > 0) {
       lines.push(`  • ${result.removed.headless.length} headless cache(s) for removed peers`);
       for (const a of result.removed.headless) lines.push(`      ${a}`);
@@ -94,9 +89,9 @@ function formatReport(result: SweepResult, totalRemoved: number, now: Date): str
   }
 
   if (!result.dryRun) {
-    const next = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+    const next = new Date(now.getTime() + CLEAN_INTERVAL_MS);
     lines.push('');
-    lines.push(`Last clean: ${now.toISOString()} (next auto-clean after ${next.toISOString().slice(0, 10)})`);
+    lines.push(`Last clean: ${now.toISOString()} (next auto-clean after ${next.toISOString()})`);
   }
 
   return lines.join('\n');

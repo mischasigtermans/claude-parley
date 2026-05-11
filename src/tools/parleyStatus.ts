@@ -1,8 +1,11 @@
 import type { ToolDef } from './types.js';
-import { readManifest } from '../registry/sessions.js';
+import { listLiveSessions, readManifest } from '../registry/sessions.js';
 import { listInbox } from '../routing/queue.js';
 import { readHeadless } from '../registry/headless.js';
 import { findPeer, readPeers } from '../registry/peers.js';
+import { discoverProjects } from '../discovery/projects.js';
+
+const UNREGISTERED_WINDOW_MS = 60 * 60 * 1000;
 
 export const parleyStatus: ToolDef = {
   name: 'parley_status',
@@ -55,6 +58,23 @@ export const parleyStatus: ToolDef = {
       lines.push(`\nConfigured peers: ${aliases.length === 0 ? '(none)' : aliases.join(', ')}`);
     }
 
+    const unregistered = await findUnregisteredClaudeProjects();
+    if (unregistered.length > 0) {
+      lines.push('');
+      lines.push('Unregistered Claude projects (recently active, no Parley session):');
+      for (const path of unregistered) lines.push(`  • ${path}`);
+      lines.push('  Restart Claude Code in any of these directories so the SessionStart hook can register it.');
+    }
+
     return lines.join('\n');
   },
 };
+
+async function findUnregisteredClaudeProjects(): Promise<string[]> {
+  const now = Date.now();
+  const [projects, live] = await Promise.all([discoverProjects(), listLiveSessions()]);
+  const registered = new Set(live.map((s) => s.projectPath));
+  return projects
+    .filter((p) => now - p.lastUsedMs < UNREGISTERED_WINDOW_MS && !registered.has(p.path))
+    .map((p) => p.path);
+}
