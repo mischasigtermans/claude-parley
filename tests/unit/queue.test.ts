@@ -159,6 +159,26 @@ describe('queue / waitForMessage', () => {
     const result = await waitForMessage('self', () => true, { timeoutMs: 200 });
     expect(result).toBeNull();
   });
+
+  it('two concurrent waitForMessage calls claim the same message exactly once', async () => {
+    await registerSession('a');
+    await registerSession('b');
+    const id = await sendMessage({
+      fromSessionId: 'a',
+      fromProject: 'A',
+      toSessionId: 'b',
+      type: 'query',
+      content: 'race',
+    });
+
+    const [r1, r2] = await Promise.all([
+      waitForMessage('b', (m) => m.id === id, { timeoutMs: 2000 }),
+      waitForMessage('b', (m) => m.id === id, { timeoutMs: 2000 }),
+    ]);
+
+    const winners = [r1, r2].filter((m) => m !== null);
+    expect(winners).toHaveLength(1);
+  });
 });
 
 describe('queue / in-progress lifecycle', () => {

@@ -64,9 +64,23 @@ CLAUDE_PID="$(find_claude_pid 2>/dev/null || true)"
 
 now() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
 
-# Generate fresh 6-char session ID.
-SESSION_ID="$(set +o pipefail; LC_ALL=C tr -dc 'a-z0-9' < /dev/urandom | head -c 6)"
-SESSION_DIR="$PARLEY_DIR/sessions/$SESSION_ID"
+# Generate fresh 6-char session ID. Retry on collision (mkdir without -p
+# fails atomically if the leaf already exists).
+SESSION_ID=""
+SESSION_DIR=""
+for attempt in 1 2 3 4 5; do
+  candidate="$(set +o pipefail; LC_ALL=C tr -dc 'a-z0-9' < /dev/urandom | head -c 6)"
+  candidate_dir="$PARLEY_DIR/sessions/$candidate"
+  if mkdir "$candidate_dir" 2>/dev/null; then
+    SESSION_ID="$candidate"
+    SESSION_DIR="$candidate_dir"
+    break
+  fi
+done
+if [ -z "$SESSION_ID" ]; then
+  echo "parley: failed to generate unique session id after 5 attempts" >&2
+  exit 1
+fi
 mkdir -p "$SESSION_DIR/inbox" "$SESSION_DIR/outbox"
 
 # Capture Claude Code's full session UUID if exposed via the env file.

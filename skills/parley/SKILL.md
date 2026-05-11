@@ -1,6 +1,6 @@
 ---
 name: parley
-description: Cross-session bridge between Claude Code projects. Activates when the user references another project or peer agent by name ("ask stagent", "what does onoma think") or invokes `/parley` to manage peers (list, discover, add, listen, ask, log, status). Drives the listen-mode receive loop when this session answers peers. All routing goes through the `parley` MCP server.
+description: Cross-session bridge between Claude Code projects. Activates when the user references another project or peer agent by name ("ask stagent", "what does onoma think") or invokes `/parley` to manage peers (list, discover, add, listen, ask, log). Drives the listen-mode receive loop when this session answers peers. All routing goes through the `parley` MCP server.
 ---
 
 # Parley
@@ -14,7 +14,7 @@ State and routing are owned by the `parley` MCP server. **Use the `parley_*` too
 Two paths. Decide which one applies before reading further.
 
 1. **Awareness path.** The user named another project or peer in natural language ("ask stagent how they handle X", "what does onoma think", "pull the spec from blog"). Take the *resolve → ask* sequence below. Most common case.
-2. **Explicit path.** The user typed `/parley`, `/parley <action>`, or asked operationally ("list peers", "listen", "discover projects", "show parley status"). Jump to *Actions*.
+2. **Explicit path.** The user typed `/parley`, `/parley <action>`, or asked operationally ("list peers", "listen", "discover projects"). Jump to *Actions*.
 
 If the user typed `/parley` with no argument, run the *discovery menu* under Actions.
 
@@ -72,8 +72,7 @@ Then parse the argument the user supplied with `/parley` (or the operational req
      parley discover                  find more recently-used projects to register
      parley add <alias> <path>        register a new peer
      parley log <alias>               read the Q&A transcript with a peer
-     parley clean                     remove dead sessions, dangling PID sentinels, orphan pointers
-     parley status [alias]            show bridge state
+     parley clean                     remove dead sessions and dangling sentinels
    Or just speak naturally: "ask <peer> about X", "what does <peer> think of Y", etc.
    ```
 
@@ -84,10 +83,6 @@ Call `parley_peers`. Print the result.
 ### `ask <peer> <question…>`
 
 Run the *ask sequence* below with `peer` = first argument, `question` = the remainder.
-
-### `attach <peer> <question…>`
-
-Call `parley_attach` (requires the peer to be in listen mode). Print the answer or the error. Use this only when the user explicitly wants live mode and is willing to fail otherwise.
 
 ### `discover`
 
@@ -115,11 +110,7 @@ Call `parley_reset`. Print confirmation. Use when a peer's headless agent has go
 
 ### `clean [--dry-run]`
 
-Call `parley_clean`. Pass `dryRun: true` if `--dry-run` was supplied. Print the result. Removes stale session manifests, dead PID sentinels, orphaned project pointers, and headless caches for peers no longer in `peers.json`. Idempotent.
-
-### `status [alias]`
-
-Call `parley_status` with optional `alias`. Print the report.
+Call `parley_clean`. Pass `dryRun: true` if `--dry-run` was supplied. Print the result. Removes stale session manifests, dead PID sentinels, and headless caches for peers no longer in `peers.json`. Idempotent.
 
 ### `stop`
 

@@ -35,13 +35,21 @@ export function isProcessAlive(pid: number): boolean {
 }
 
 export async function readManifest(sid: string): Promise<SessionManifest | null> {
+  let raw: string;
   try {
-    const raw = await readFile(paths.sessionManifest(sid), 'utf8');
-    return JSON.parse(raw) as SessionManifest;
+    raw = await readFile(paths.sessionManifest(sid), 'utf8');
   } catch (err) {
     if (isErrnoException(err) && err.code === 'ENOENT') return null;
     throw err;
   }
+  let parsed: SessionManifest;
+  try {
+    parsed = JSON.parse(raw) as SessionManifest;
+  } catch {
+    return null;
+  }
+  if (!Number.isFinite(new Date(parsed.lastHeartbeat).getTime())) return null;
+  return parsed;
 }
 
 export async function writeManifest(manifest: SessionManifest): Promise<void> {
@@ -100,11 +108,6 @@ export async function listLiveSessions(): Promise<SessionManifest[]> {
   const sessions = await listSessions();
   const now = Date.now();
   return sessions.filter((s) => now - new Date(s.lastHeartbeat).getTime() < STALE_AFTER_MS);
-}
-
-export async function findLiveByPath(projectPath: string): Promise<SessionManifest | null> {
-  const live = await listLiveSessions();
-  return live.find((s) => s.projectPath === projectPath) ?? null;
 }
 
 export async function listLiveByPath(projectPath: string): Promise<SessionManifest[]> {

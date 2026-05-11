@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.2.3] - 2026-05-11
+
+Cleanup release: correctness fixes and a leaner API.
+
+**Breaking**
+
+- Removed `parley_attach`. Live-only routing is no longer a separate tool; `parley_ask` chooses the route automatically.
+- Removed `parley_status`. Use `parley_peers` for peer state and `parley_discover` for unregistered Claude projects.
+
+**Correctness**
+
+- Fix race in `waitForMessage`: rename-as-claim pattern means concurrent readers no longer double-deliver the same message.
+- Skip SIGTERM during sweep when the project path is gone (the PID is likely recycled).
+- `readManifest` rejects manifests with unparseable `lastHeartbeat` instead of treating them as "live forever".
+- `register.sh` retries on session-ID collision (`mkdir` without `-p` fails atomically on EEXIST).
+- Router uses an exhaustive switch on `ListeningResolution` so new variants surface as compile errors.
+
+**Cleanup**
+
+- Dead code removed: `resolvePeerConfig`, `findLiveByPath`, `fromProjectPath` on `AskInput`, `agent: 'claude'` hardcode, `SweepScope`, `killed` field on `SweepRemoved`, the per-tool `autoSweep` and its `lastAutoSweepAt` state key.
+- Auto-clean lives in one place: the skill calls `parley_clean({auto: true})` at the top of every `/parley` action with a 1-hour cooldown.
+
 ## [0.2.2] - 2026-05-11
 
 - Multi-session per project. Each Claude Code window in the same repo registers its own parley session and shows up as a separate row in `parley_peers`. Listening sessions are addressable individually as `alias:sid` (e.g. `parley_ask onoma:a6v9lk "..."`). With 2+ listening sessions for the same path and no `:sid` suffix, the router returns an error listing the live sids so the caller can pick.

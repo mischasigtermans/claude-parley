@@ -151,7 +151,6 @@ describe('MCP server harness', () => {
     expect(names).toEqual([
       'parley_add',
       'parley_ask',
-      'parley_attach',
       'parley_clean',
       'parley_discover',
       'parley_listen',
@@ -161,7 +160,6 @@ describe('MCP server harness', () => {
       'parley_remove',
       'parley_reset',
       'parley_respond',
-      'parley_status',
     ]);
   });
 
@@ -314,21 +312,6 @@ describe('MCP server harness', () => {
     expect(headlessJson.claudeSessionId).toBe('mock-sid');
   });
 
-  it('parley_attach errors clearly when peer is not in listen mode', async () => {
-    h = await startHarness({ parleyDir: t.tmp.root });
-    await h.send('tools/call', {
-      name: 'parley_add',
-      arguments: { alias: 'peer1', path: '/abs/peer1' },
-    });
-    const result = await h.send('tools/call', {
-      name: 'parley_attach',
-      arguments: { peer: 'peer1', question: 'hi' },
-    });
-    // Tool errors come back via the result envelope (isError: true)
-    expect(result.isError).toBe(true);
-    expect(callContent(result)).toMatch(/not in listen mode/);
-  });
-
   it('parley_listen flips this session to listening status', async () => {
     h = await startHarness({ parleyDir: t.tmp.root });
     const result = await h.send('tools/call', { name: 'parley_listen', arguments: {} });
@@ -379,14 +362,6 @@ describe('MCP server harness', () => {
       arguments: { alias: 'peer1' },
     });
     expect(callContent(result)).toMatch(/No cached headless session/);
-  });
-
-  it('parley_status reports current session state', async () => {
-    h = await startHarness({ parleyDir: t.tmp.root });
-    const result = await h.send('tools/call', { name: 'parley_status', arguments: {} });
-    const text = callContent(result);
-    expect(text).toContain(SESSION_ID);
-    expect(text).toContain('status: registered');
   });
 
   it('parley_peers pluralizes turn counts correctly (regression)', async () => {

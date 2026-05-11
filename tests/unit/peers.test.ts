@@ -6,7 +6,7 @@ import {
   upsertPeer,
   removePeer,
   findPeer,
-  resolvePeerConfig,
+  resolvePeerConfigFromFile,
   assertValidAlias,
   InvalidAliasError,
 } from '../../src/registry/peers.js';
@@ -51,7 +51,7 @@ describe('peers registry', () => {
     expect(await findPeer('nope')).toBeNull();
   });
 
-  it('resolvePeerConfig inherits from defaults', async () => {
+  it('resolvePeerConfigFromFile inherits from defaults', async () => {
     await mkdir(paths.root, { recursive: true });
     await writeFile(
       paths.peersFile,
@@ -62,14 +62,14 @@ describe('peers registry', () => {
         },
       }),
     );
-    const resolved = await resolvePeerConfig('lawyer');
+    const resolved = resolvePeerConfigFromFile('lawyer', await readPeers());
     expect(resolved).not.toBeNull();
     expect(resolved!.resolvedModel).toBe('sonnet');
     expect(resolved!.resolvedMcpServers).toEqual({});
     expect(resolved!.resolvedSkipPermissions).toBe(false);
   });
 
-  it('resolvePeerConfig prefers per-peer overrides over defaults', async () => {
+  it('resolvePeerConfigFromFile prefers per-peer overrides over defaults', async () => {
     await mkdir(paths.root, { recursive: true });
     await writeFile(
       paths.peersFile,
@@ -80,7 +80,7 @@ describe('peers registry', () => {
         },
       }),
     );
-    const resolved = await resolvePeerConfig('lawyer');
+    const resolved = resolvePeerConfigFromFile('lawyer', await readPeers());
     expect(resolved!.resolvedModel).toBe('opus');
   });
 

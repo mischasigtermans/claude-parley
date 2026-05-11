@@ -31,7 +31,6 @@ export const parleyAdd: ToolDef = {
     const saved = await upsertPeer(alias, {
       path,
       description: description || undefined,
-      agent: 'claude',
       skipPermissions,
     });
 

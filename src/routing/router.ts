@@ -28,9 +28,7 @@ export interface AskInput {
   question: string;
   fromSessionId: string;
   fromProject: string;
-  fromProjectPath?: string;
   timeoutMs?: number;
-  requireLive?: boolean;
   mode?: AskMode;
 }
 
@@ -62,35 +60,30 @@ export async function routeAsk(input: AskInput): Promise<AskResult> {
 
   const resolved = resolvePeerConfigFromFile(peer.alias, peersFile);
   const live = await resolveListening(peer.alias, peer.config, peer.sessionId, input.fromSessionId);
-  if (live.kind === 'single') {
-    const answer = await routeLive({
-      ...input,
-      target: live.session,
-    });
-    await appendTurn(peer.alias, input.fromProject, input.question, answer, 'live');
-    return { alias: peer.alias, tier: 'live', answer };
-  }
-  if (live.kind === 'multiple') {
-    const sids = live.sessions.map((s) => `${peer.alias}:${s.sessionId}`).join(', ');
-    throw new Error(
-      `parley: ${live.sessions.length} listening sessions for "${peer.alias}". Retry with one of: ${sids}. Or omit the suffix to use headless.`,
-    );
-  }
-  if (live.kind === 'sid-not-found') {
-    throw new Error(
-      `parley: no live session "${live.sessionId}" for peer "${peer.alias}". Check parley_peers for current sids.`,
-    );
-  }
-  if (live.kind === 'sid-not-listening') {
-    throw new Error(
-      `parley: session "${live.session.sessionId}" exists but is not in listen mode. Run /parley listen in that window, or ask "${peer.alias}" without the :sid suffix to use headless.`,
-    );
-  }
-
-  if (input.requireLive) {
-    throw new Error(
-      `parley: peer "${peer.alias}" is not in listen mode. Run \`/parley listen\` in that session, or omit requireLive to fall back to headless.`,
-    );
+  switch (live.kind) {
+    case 'single': {
+      const answer = await routeLive({ ...input, target: live.session });
+      await appendTurn(peer.alias, input.fromProject, input.question, answer, 'live');
+      return { alias: peer.alias, tier: 'live', answer };
+    }
+    case 'multiple': {
+      const sids = live.sessions.map((s) => `${peer.alias}:${s.sessionId}`).join(', ');
+      throw new Error(
+        `parley: ${live.sessions.length} listening sessions for "${peer.alias}". Retry with one of: ${sids}. Or omit the suffix to use headless.`,
+      );
+    }
+    case 'sid-not-found':
+      throw new Error(
+        `parley: no live session "${live.sessionId}" for peer "${peer.alias}". Check parley_peers for current sids.`,
+      );
+    case 'sid-not-listening':
+      throw new Error(
+        `parley: session "${live.session.sessionId}" exists but is not in listen mode. Run /parley listen in that window, or ask "${peer.alias}" without the :sid suffix to use headless.`,
+      );
+    case 'none':
+      break;
+    default:
+      live satisfies never;
   }
 
   const cwd = expandHome(peer.config.path);

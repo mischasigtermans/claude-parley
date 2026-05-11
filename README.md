@@ -79,18 +79,16 @@ Every turn is appended to a transcript at `~/.claude/parley/logs/<peer>.md`, so 
 
 | Command | Effect |
 |---|---|
-| `/parley` | Discovery menu. Auto-cleans every 7 days, lists peers, suggests next moves. |
+| `/parley` | Discovery menu. Auto-cleans hourly, lists peers, suggests next moves. |
 | `/parley peers` (or `list`) | List configured peers and any live sessions on the machine |
 | `/parley discover` | Scan `~/.claude/projects` for projects you've used recently and aren't yet registered |
 | `/parley ask <peer> <question>` | One-shot query (silent unless the peer is listening) |
-| `/parley attach <peer> <question>` | Like ask, but errors out if peer isn't in live listen mode |
 | `/parley listen` | Make this window the live answerer for its project and enter the receive loop |
 | `/parley add <alias> <path> [description]` | Register a peer in `peers.json` |
 | `/parley remove <alias>` | Unregister a peer |
 | `/parley log <alias> [tail]` | Read recent Q&A transcript with a peer |
 | `/parley reset <alias>` | Clear cached headless session. Next ask spawns fresh. |
-| `/parley clean [--dry-run]` | Remove dead sessions, dangling PID sentinels, orphan pointers |
-| `/parley status [alias]` | Show bridge state, this session's status, peer details |
+| `/parley clean [--dry-run]` | Remove dead sessions and dangling PID sentinels |
 
 Both the slash commands and natural-language triggers ("ask onoma about X") are handled by a single `parley` skill, which routes to the MCP tools. The slash commands are the explicit operational entry point; awareness handles the conversational case.
 
@@ -98,7 +96,7 @@ Both the slash commands and natural-language triggers ("ask onoma about X") are 
 
 The bundled MCP server exposes:
 
-`parley_peers`, `parley_ask`, `parley_attach`, `parley_listen`, `parley_receive_next`, `parley_respond`, `parley_log`, `parley_reset`, `parley_add`, `parley_remove`, `parley_status`, `parley_clean`, `parley_discover`
+`parley_peers`, `parley_ask`, `parley_listen`, `parley_receive_next`, `parley_respond`, `parley_log`, `parley_reset`, `parley_add`, `parley_remove`, `parley_clean`, `parley_discover`
 
 These are also reachable from any other MCP-capable client (Claude Desktop, Cursor) by pointing it at `bin/parley-mcp` directly. Claude Code is just the most ergonomic surface.
 

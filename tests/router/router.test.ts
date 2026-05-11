@@ -339,22 +339,6 @@ describe('routeAsk', () => {
     ).rejects.toThrow(/no live session "ghostt"/);
   });
 
-  it('requireLive throws if peer is not in listening status', async () => {
-    const mock = createMockDriver();
-    _setClaudeDriverForTesting(mock);
-    await writePeers({ peers: { peer1: { path: '/abs/peer1' } } });
-
-    await expect(
-      routeAsk({
-        peerRef: 'peer1',
-        question: 'q',
-        fromSessionId: FROM_SESSION,
-        fromProject: 'caller',
-        requireLive: true,
-      }),
-    ).rejects.toThrow(/not in listen mode/);
-  });
-
   it('reads peers.json at most once per routeAsk', async () => {
     const mock = createMockDriver();
     _setClaudeDriverForTesting(mock);

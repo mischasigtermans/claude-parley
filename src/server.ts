@@ -51,10 +51,10 @@ async function main() {
 
   const initialSid = ctx.getCurrentSessionId();
   if (initialSid) {
-    void (await updateManifest(initialSid, (m) => {
-      if (m.pid === process.pid) return null; // already current, no write
+    await updateManifest(initialSid, (m) => {
+      if (m.pid === process.pid) return null;
       return { ...m, pid: process.pid };
-    }));
+    });
   }
 
   const heartbeat = setInterval(() => {

@@ -14366,10 +14366,6 @@ async function removePeer(alias) {
     return true;
   });
 }
-async function findPeer(aliasOrPath) {
-  const file = await readPeers();
-  return findPeerInFile(aliasOrPath, file);
-}
 function findPeerInFile(aliasOrPath, file) {
   if (file.peers[aliasOrPath]) {
     return { alias: aliasOrPath, config: file.peers[aliasOrPath] };
@@ -14421,7 +14417,6 @@ var parleyAdd = {
     const saved = await upsertPeer(alias, {
       path,
       description: description || undefined,
-      agent: "claude",
       skipPermissions
     });
     return `Added peer "${alias}" → ${saved.path}`;
@@ -14444,14 +14439,23 @@ function isProcessAlive(pid) {
   }
 }
 async function readManifest(sid) {
+  let raw;
   try {
-    const raw = await readFile3(paths.sessionManifest(sid), "utf8");
-    return JSON.parse(raw);
+    raw = await readFile3(paths.sessionManifest(sid), "utf8");
   } catch (err) {
     if (isErrnoException(err) && err.code === "ENOENT")
       return null;
     throw err;
   }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!Number.isFinite(new Date(parsed.lastHeartbeat).getTime()))
+    return null;
+  return parsed;
 }
 async function writeManifest(manifest) {
   await mkdir3(paths.sessionDir(manifest.sessionId), { recursive: true });
@@ -14778,10 +14782,10 @@ async function waitForMessage(sessionId, predicate, opts = { timeoutMs: 90000 })
     for (const entry of entries) {
       if (!entry.endsWith(".json"))
         continue;
-      const path = join2(inbox, entry);
+      const sourcePath = join2(inbox, entry);
       let raw;
       try {
-        raw = await readFile5(path, "utf8");
+        raw = await readFile5(sourcePath, "utf8");
       } catch {
         continue;
       }
@@ -14797,16 +14801,22 @@ async function waitForMessage(sessionId, predicate, opts = { timeoutMs: 90000 })
         continue;
       if (!predicate(msg))
         continue;
-      if (mark !== "none") {
-        const targetDir = mark === "in-progress" ? paths.sessionInboxInProgress(sessionId) : paths.sessionInboxRead(sessionId);
-        msg.status = mark;
-        await mkdir4(targetDir, { recursive: true });
-        const target = join2(targetDir, entry);
-        const tmp = `${target}.${process.pid}.tmp`;
-        await writeFile3(tmp, JSON.stringify(msg, null, 2));
-        await rename(tmp, target);
-        await unlink3(path).catch(() => {});
+      if (mark === "none")
+        return msg;
+      const targetDir = mark === "in-progress" ? paths.sessionInboxInProgress(sessionId) : paths.sessionInboxRead(sessionId);
+      await mkdir4(targetDir, { recursive: true });
+      const targetPath = join2(targetDir, entry);
+      try {
+        await rename(sourcePath, targetPath);
+      } catch (err) {
+        if (isErrnoException(err) && err.code === "ENOENT")
+          continue;
+        throw err;
       }
+      msg.status = mark;
+      const tmp = `${targetPath}.${process.pid}.tmp`;
+      await writeFile3(tmp, JSON.stringify(msg, null, 2));
+      await rename(tmp, targetPath);
       return msg;
     }
     await sleep2(POLL_INTERVAL_MS);
@@ -14906,27 +14916,6 @@ async function pruneRead(sessionId, olderThanMs) {
   }
   return removed;
 }
-async function listInbox(sessionId) {
-  const inbox = paths.sessionInbox(sessionId);
-  let entries;
-  try {
-    entries = await readdir2(inbox);
-  } catch (err) {
-    if (isErrnoException(err) && err.code === "ENOENT")
-      return [];
-    throw err;
-  }
-  const out = [];
-  for (const entry of entries) {
-    if (!entry.endsWith(".json"))
-      continue;
-    try {
-      const raw = await readFile5(join2(inbox, entry), "utf8");
-      out.push(JSON.parse(raw));
-    } catch {}
-  }
-  return out;
-}
 function sleep2(ms) {
   return new Promise((resolve2) => setTimeout(resolve2, ms));
 }
@@ -14980,26 +14969,23 @@ async function routeAsk(input) {
   }
   const resolved2 = resolvePeerConfigFromFile(peer.alias, peersFile);
   const live = await resolveListening(peer.alias, peer.config, peer.sessionId, input.fromSessionId);
-  if (live.kind === "single") {
-    const answer = await routeLive({
-      ...input,
-      target: live.session
-    });
-    await appendTurn(peer.alias, input.fromProject, input.question, answer, "live");
-    return { alias: peer.alias, tier: "live", answer };
-  }
-  if (live.kind === "multiple") {
-    const sids = live.sessions.map((s) => `${peer.alias}:${s.sessionId}`).join(", ");
-    throw new Error(`parley: ${live.sessions.length} listening sessions for "${peer.alias}". Retry with one of: ${sids}. Or omit the suffix to use headless.`);
-  }
-  if (live.kind === "sid-not-found") {
-    throw new Error(`parley: no live session "${live.sessionId}" for peer "${peer.alias}". Check parley_peers for current sids.`);
-  }
-  if (live.kind === "sid-not-listening") {
-    throw new Error(`parley: session "${live.session.sessionId}" exists but is not in listen mode. Run /parley listen in that window, or ask "${peer.alias}" without the :sid suffix to use headless.`);
-  }
-  if (input.requireLive) {
-    throw new Error(`parley: peer "${peer.alias}" is not in listen mode. Run \`/parley listen\` in that session, or omit requireLive to fall back to headless.`);
+  switch (live.kind) {
+    case "single": {
+      const answer = await routeLive({ ...input, target: live.session });
+      await appendTurn(peer.alias, input.fromProject, input.question, answer, "live");
+      return { alias: peer.alias, tier: "live", answer };
+    }
+    case "multiple": {
+      const sids = live.sessions.map((s) => `${peer.alias}:${s.sessionId}`).join(", ");
+      throw new Error(`parley: ${live.sessions.length} listening sessions for "${peer.alias}". Retry with one of: ${sids}. Or omit the suffix to use headless.`);
+    }
+    case "sid-not-found":
+      throw new Error(`parley: no live session "${live.sessionId}" for peer "${peer.alias}". Check parley_peers for current sids.`);
+    case "sid-not-listening":
+      throw new Error(`parley: session "${live.session.sessionId}" exists but is not in listen mode. Run /parley listen in that window, or ask "${peer.alias}" without the :sid suffix to use headless.`);
+    case "none":
+      break;
+    default:
   }
   const cwd = expandHome(peer.config.path);
   const driver = getClaudeDriver();
@@ -15151,46 +15137,10 @@ var parleyAsk = {
       question,
       fromSessionId: sid,
       fromProject,
-      fromProjectPath: manifest?.projectPath,
       timeoutMs,
       mode
     });
     return `[${result.alias} via ${result.tier}${mode === "deep" ? " · deep" : ""}]
-
-${result.answer}`;
-  }
-};
-
-// src/tools/parleyAttach.ts
-var parleyAttach = {
-  name: "parley_attach",
-  description: "Like parley_ask, but FAILS if the peer is not currently in /parley listen mode. Use only when the user explicitly wants the live, in-window flow (so they can see the conversation in the peer's Claude Code window in real time) and would rather get an error than a silent fall-back to headless. Supports alias:sid to target a specific listening session.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      peer: { type: "string", description: "Peer alias, alias:sid for a specific listening session, or absolute path." },
-      question: { type: "string", description: "Question to send." },
-      timeoutMs: { type: "number", description: "Max wait for response. Default 120000." }
-    },
-    required: ["peer", "question"],
-    additionalProperties: false
-  },
-  async handler(args, ctx) {
-    const sid = ctx.getCurrentSessionId();
-    if (!sid)
-      throw new Error("parley: no current session registered.");
-    const manifest = await readManifest(sid);
-    const fromProject = manifest?.alias ?? ctx.getCurrentProjectName();
-    const result = await routeAsk({
-      peerRef: String(args.peer),
-      question: String(args.question),
-      fromSessionId: sid,
-      fromProject,
-      timeoutMs: typeof args.timeoutMs === "number" ? args.timeoutMs : 120000,
-      requireLive: true,
-      mode: "default"
-    });
-    return `[${result.alias} via ${result.tier}]
 
 ${result.answer}`;
   }
@@ -15202,13 +15152,8 @@ import { join as join3 } from "node:path";
 var HEARTBEAT_DEAD_MS = 60 * 60 * 1000;
 async function sweep(opts = {}) {
   const dryRun = opts.dryRun === true;
-  const scope = opts.scope ?? "full";
-  const removed = { sessions: [], sentinels: [], headless: [], killed: [] };
+  const removed = { sessions: [], sentinels: [], headless: [] };
   const advisories = [];
-  if (scope === "sentinels-only") {
-    await sweepSentinels(removed, dryRun);
-    return { removed, advisories, dryRun };
-  }
   const peersFile = await readPeers();
   const peerAliases = new Set(Object.keys(peersFile.peers));
   await sweepSessions(removed, dryRun);
@@ -15237,17 +15182,9 @@ async function sweepSessions(removed, dryRun) {
     }
     const age = now - new Date(manifest.lastHeartbeat).getTime();
     const stale = age > HEARTBEAT_DEAD_MS;
-    const dead = !isProcessAlive(manifest.pid);
+    const processAlive = isProcessAlive(manifest.pid);
     const pathGone = !await pathExists(manifest.projectPath);
-    if (stale && (dead || pathGone)) {
-      if (!dead && manifest.pid && manifest.pid !== process.pid) {
-        if (!dryRun) {
-          try {
-            process.kill(manifest.pid, "SIGTERM");
-          } catch {}
-        }
-        removed.killed.push(manifest.pid);
-      }
+    if (stale && (!processAlive || pathGone)) {
       if (!dryRun)
         await rm(paths.sessionDir(sid), { recursive: true, force: true });
       removed.sessions.push(sid);
@@ -15327,8 +15264,7 @@ async function readState() {
   try {
     const parsed = JSON.parse(raw);
     const lastCleanAt = typeof parsed.lastCleanAt === "string" ? parsed.lastCleanAt : undefined;
-    const lastAutoSweepAt = typeof parsed.lastAutoSweepAt === "string" ? parsed.lastAutoSweepAt : undefined;
-    return { lastCleanAt, lastAutoSweepAt };
+    return { lastCleanAt };
   } catch {
     return {};
   }
@@ -15384,7 +15320,7 @@ var parleyClean = {
   }
 };
 function countRemoved(result) {
-  return result.removed.sessions.length + result.removed.sentinels.length + result.removed.headless.length + result.removed.killed.length;
+  return result.removed.sessions.length + result.removed.sentinels.length + result.removed.headless.length;
 }
 function formatReport(result, totalRemoved, now) {
   const lines = [];
@@ -15395,10 +15331,6 @@ function formatReport(result, totalRemoved, now) {
     lines.push(`${verb}:`);
     if (result.removed.sessions.length > 0) {
       lines.push(`  • ${result.removed.sessions.length} stale session manifest(s) (heartbeat >1h, dead PID or missing path)`);
-    }
-    if (result.removed.killed.length > 0) {
-      const verbKill = result.dryRun ? "would terminate" : "terminated";
-      lines.push(`  • ${verbKill} ${result.removed.killed.length} orphan MCP server process(es): ${result.removed.killed.join(", ")}`);
     }
     if (result.removed.sentinels.length > 0) {
       lines.push(`  • ${result.removed.sentinels.length} dead PID sentinel(s)`);
@@ -15602,7 +15534,6 @@ var parleyLog = {
 };
 
 // src/tools/parleyPeers.ts
-var AUTO_SWEEP_INTERVAL_MS = 60000;
 var parleyPeers = {
   name: "parley_peers",
   description: "List all addressable peers on this machine. Call this FIRST whenever the user references another project by name (e.g. 'ask stagent about X', 'check with onoma', 'what does Y think'). Each peer gets a headless row (always reachable, alias-keyed) plus one row per /parley listen session at that path (addressable as alias:sid). Use the result to pick the right peer ref before calling parley_ask. Returns a markdown table: Peer, Source (Code / Code CLI / Cowork / '-'), Mode (headless/listening), History (turns of cached headless conversation, or '-'), Path, Notes.",
@@ -15612,7 +15543,6 @@ var parleyPeers = {
     additionalProperties: false
   },
   async handler(_args, ctx) {
-    await autoSweep();
     const peersFile = await readPeers();
     const live = await listLiveSessions();
     const sid = ctx.getCurrentSessionId();
@@ -15706,16 +15636,6 @@ function formatSource(platform, mode) {
   if (platform === "desktop")
     return "Code";
   return "-";
-}
-async function autoSweep() {
-  try {
-    const state = await readState();
-    const last = state.lastAutoSweepAt ? Date.parse(state.lastAutoSweepAt) : 0;
-    if (Number.isFinite(last) && Date.now() - last < AUTO_SWEEP_INTERVAL_MS)
-      return;
-    await sweep({ scope: "sentinels-only" });
-    await writeState({ ...state, lastAutoSweepAt: new Date().toISOString() });
-  } catch {}
 }
 
 // src/tools/parleyReceiveNext.ts
@@ -15827,84 +15747,10 @@ var parleyRespond = {
   }
 };
 
-// src/tools/parleyStatus.ts
-var UNREGISTERED_WINDOW_MS = 60 * 60 * 1000;
-var parleyStatus = {
-  name: "parley_status",
-  description: "Show current Parley state: this session's ID and listening status, pending inbox messages, configured peers, and any cached headless sessions. If alias is provided, focus the report on that peer.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      alias: { type: "string", description: "Optional peer alias to focus the report on." }
-    },
-    additionalProperties: false
-  },
-  async handler(args, ctx) {
-    const sid = ctx.getCurrentSessionId();
-    const lines = [];
-    if (sid) {
-      const manifest = await readManifest(sid);
-      if (manifest) {
-        lines.push(`This session: ${manifest.alias} (${sid})`);
-        lines.push(`  status: ${manifest.status}`);
-        lines.push(`  path: ${manifest.projectPath}`);
-        lines.push(`  last heartbeat: ${manifest.lastHeartbeat}`);
-        const inbox = await listInbox(sid);
-        const pending = inbox.filter((m) => m.status === "pending").length;
-        lines.push(`  inbox: ${pending} pending of ${inbox.length} total`);
-      }
-    } else {
-      lines.push("This session is not registered. The SessionStart hook may not have run.");
-    }
-    if (typeof args.alias === "string") {
-      const focus = await findPeer(args.alias);
-      if (!focus) {
-        lines.push(`
-No peer "${args.alias}" configured.`);
-      } else {
-        const headless = await readHeadless(focus.alias);
-        lines.push(`
-Peer "${focus.alias}":`);
-        lines.push(`  path: ${focus.config.path}`);
-        if (focus.config.description)
-          lines.push(`  description: ${focus.config.description}`);
-        if (headless) {
-          lines.push(`  headless session: ${headless.claudeSessionId}`);
-          lines.push(`  turns: ${headless.turnCount}, last used: ${headless.lastUsedAt}`);
-        } else {
-          lines.push("  no cached headless session");
-        }
-      }
-    } else {
-      const peers = await readPeers();
-      const aliases = Object.keys(peers.peers);
-      lines.push(`
-Configured peers: ${aliases.length === 0 ? "(none)" : aliases.join(", ")}`);
-    }
-    const unregistered = await findUnregisteredClaudeProjects();
-    if (unregistered.length > 0) {
-      lines.push("");
-      lines.push("Unregistered Claude projects (recently active, no Parley session):");
-      for (const path of unregistered)
-        lines.push(`  • ${path}`);
-      lines.push("  Restart Claude Code in any of these directories so the SessionStart hook can register it.");
-    }
-    return lines.join(`
-`);
-  }
-};
-async function findUnregisteredClaudeProjects() {
-  const now = Date.now();
-  const [projects, live] = await Promise.all([discoverProjects(), listLiveSessions()]);
-  const registered = new Set(live.map((s) => s.projectPath));
-  return projects.filter((p) => now - p.lastUsedMs < UNREGISTERED_WINDOW_MS && !registered.has(p.path)).map((p) => p.path);
-}
-
 // src/tools/index.ts
 var tools = [
   parleyAdd,
   parleyAsk,
-  parleyAttach,
   parleyClean,
   parleyDiscover,
   parleyListen,
@@ -15913,8 +15759,7 @@ var tools = [
   parleyReceiveNext,
   parleyRemove,
   parleyReset,
-  parleyRespond,
-  parleyStatus
+  parleyRespond
 ];
 
 // src/server.ts

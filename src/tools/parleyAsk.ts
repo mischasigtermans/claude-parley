@@ -51,7 +51,6 @@ export const parleyAsk: ToolDef = {
       question,
       fromSessionId: sid,
       fromProject,
-      fromProjectPath: manifest?.projectPath,
       timeoutMs,
       mode,
     });

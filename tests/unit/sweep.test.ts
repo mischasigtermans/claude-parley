@@ -130,14 +130,4 @@ describe('sweep', () => {
     expect(second.removed.headless).toEqual([]);
   });
 
-  it('sentinels-only scope only sweeps the PID sentinel directory', async () => {
-    await writeManifest(manifest({ sessionId: 'gone', pid: 999_999, lastHeartbeat: TWO_HOURS_AGO() }));
-    await mkdir(paths.byClaudePidDir, { recursive: true });
-    await writeFile(join(paths.byClaudePidDir, '999999.session'), 'x');
-
-    const result = await sweep({ scope: 'sentinels-only' });
-    expect(result.removed.sessions).toEqual([]);
-    expect(result.removed.sentinels).toContain('999999.session');
-    expect(await readManifest('gone')).not.toBeNull();
-  });
 });

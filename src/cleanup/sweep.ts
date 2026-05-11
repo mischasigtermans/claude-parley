@@ -11,7 +11,6 @@ export interface SweepRemoved {
   sessions: string[];
   sentinels: string[];
   headless: string[];
-  killed: number[];
 }
 
 export interface SweepResult {
@@ -20,20 +19,12 @@ export interface SweepResult {
   dryRun: boolean;
 }
 
-export type SweepScope = 'full' | 'sentinels-only';
-
 export async function sweep(
-  opts: { dryRun?: boolean; scope?: SweepScope } = {},
+  opts: { dryRun?: boolean } = {},
 ): Promise<SweepResult> {
   const dryRun = opts.dryRun === true;
-  const scope = opts.scope ?? 'full';
-  const removed: SweepRemoved = { sessions: [], sentinels: [], headless: [], killed: [] };
+  const removed: SweepRemoved = { sessions: [], sentinels: [], headless: [] };
   const advisories: string[] = [];
-
-  if (scope === 'sentinels-only') {
-    await sweepSentinels(removed, dryRun);
-    return { removed, advisories, dryRun };
-  }
 
   const peersFile = await readPeers();
   const peerAliases = new Set(Object.keys(peersFile.peers));
@@ -64,15 +55,9 @@ async function sweepSessions(removed: SweepRemoved, dryRun: boolean): Promise<vo
     }
     const age = now - new Date(manifest.lastHeartbeat).getTime();
     const stale = age > HEARTBEAT_DEAD_MS;
-    const dead = !isProcessAlive(manifest.pid);
+    const processAlive = isProcessAlive(manifest.pid);
     const pathGone = !(await pathExists(manifest.projectPath));
-    if (stale && (dead || pathGone)) {
-      if (!dead && manifest.pid && manifest.pid !== process.pid) {
-        if (!dryRun) {
-          try { process.kill(manifest.pid, 'SIGTERM'); } catch {}
-        }
-        removed.killed.push(manifest.pid);
-      }
+    if (stale && (!processAlive || pathGone)) {
       if (!dryRun) await rm(paths.sessionDir(sid), { recursive: true, force: true });
       removed.sessions.push(sid);
     }

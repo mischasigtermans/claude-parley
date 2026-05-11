@@ -1,4 +1,6 @@
 import { describe, it, beforeEach, afterEach, expect } from 'vitest';
+import { writeFile, mkdir } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import {
   readManifest,
   writeManifest,
@@ -6,9 +8,9 @@ import {
   setStatus,
   listSessions,
   listLiveSessions,
-  findLiveByPath,
   SessionManifest,
 } from '../../src/registry/sessions.js';
+import { paths } from '../../src/registry/paths.js';
 import { setup } from '../helpers/tmpdir.js';
 
 function manifestFor(overrides: Partial<SessionManifest> = {}): SessionManifest {
@@ -90,11 +92,18 @@ describe('sessions registry', () => {
     expect(await readManifest('dead')).not.toBeNull();
   });
 
-  it('findLiveByPath matches projectPath exactly', async () => {
-    await writeManifest(manifestFor({ sessionId: 'a', projectPath: '/abs/one' }));
-    await writeManifest(manifestFor({ sessionId: 'b', projectPath: '/abs/two' }));
-    const found = await findLiveByPath('/abs/two');
-    expect(found?.sessionId).toBe('b');
-    expect(await findLiveByPath('/abs/three')).toBeNull();
+  it('readManifest returns null when lastHeartbeat is unparseable', async () => {
+    const manifestPath = paths.sessionManifest('garbage');
+    await mkdir(dirname(manifestPath), { recursive: true });
+    const m = manifestFor({ sessionId: 'garbage' });
+    await writeFile(manifestPath, JSON.stringify({ ...m, lastHeartbeat: 'not-a-date' }));
+    expect(await readManifest('garbage')).toBeNull();
+  });
+
+  it('readManifest returns null on malformed JSON', async () => {
+    const manifestPath = paths.sessionManifest('broken');
+    await mkdir(dirname(manifestPath), { recursive: true });
+    await writeFile(manifestPath, '{ not json');
+    expect(await readManifest('broken')).toBeNull();
   });
 });

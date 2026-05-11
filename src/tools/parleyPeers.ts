@@ -10,10 +10,6 @@ import {
 } from '../registry/sessions.js';
 import { readHeadless } from '../registry/headless.js';
 import { expandHome } from '../registry/paths.js';
-import { sweep } from '../cleanup/sweep.js';
-import { readState, writeState } from '../registry/state.js';
-
-const AUTO_SWEEP_INTERVAL_MS = 60_000;
 
 export const parleyPeers: ToolDef = {
   name: 'parley_peers',
@@ -25,8 +21,6 @@ export const parleyPeers: ToolDef = {
     additionalProperties: false,
   },
   async handler(_args, ctx) {
-    await autoSweep();
-
     const peersFile = await readPeers();
     const live = await listLiveSessions();
     const sid = ctx.getCurrentSessionId();
@@ -144,16 +138,4 @@ function formatSource(platform?: Platform, mode?: Mode): string {
   if (platform === 'cli') return 'Code CLI';
   if (platform === 'desktop') return 'Code';
   return '-';
-}
-
-async function autoSweep(): Promise<void> {
-  try {
-    const state = await readState();
-    const last = state.lastAutoSweepAt ? Date.parse(state.lastAutoSweepAt) : 0;
-    if (Number.isFinite(last) && Date.now() - last < AUTO_SWEEP_INTERVAL_MS) return;
-    await sweep({ scope: 'sentinels-only' });
-    await writeState({ ...state, lastAutoSweepAt: new Date().toISOString() });
-  } catch {
-    // best-effort, never block the read
-  }
 }

@@ -81,10 +81,10 @@ export async function waitForMessage(
     const entries = await readdir(inbox).catch(() => [] as string[]);
     for (const entry of entries) {
       if (!entry.endsWith('.json')) continue;
-      const path = join(inbox, entry);
+      const sourcePath = join(inbox, entry);
       let raw: string;
       try {
-        raw = await readFile(path, 'utf8');
+        raw = await readFile(sourcePath, 'utf8');
       } catch {
         continue;
       }
@@ -98,19 +98,26 @@ export async function waitForMessage(
       if (msg.from === sessionId) continue;
       if (!predicate(msg)) continue;
 
-      if (mark !== 'none') {
-        const targetDir =
-          mark === 'in-progress'
-            ? paths.sessionInboxInProgress(sessionId)
-            : paths.sessionInboxRead(sessionId);
-        msg.status = mark;
-        await mkdir(targetDir, { recursive: true });
-        const target = join(targetDir, entry);
-        const tmp = `${target}.${process.pid}.tmp`;
-        await writeFile(tmp, JSON.stringify(msg, null, 2));
-        await rename(tmp, target);
-        await unlink(path).catch(() => {});
+      if (mark === 'none') return msg;
+
+      const targetDir =
+        mark === 'in-progress'
+          ? paths.sessionInboxInProgress(sessionId)
+          : paths.sessionInboxRead(sessionId);
+      await mkdir(targetDir, { recursive: true });
+      const targetPath = join(targetDir, entry);
+
+      try {
+        await rename(sourcePath, targetPath);
+      } catch (err) {
+        if (isErrnoException(err) && err.code === 'ENOENT') continue;
+        throw err;
       }
+
+      msg.status = mark;
+      const tmp = `${targetPath}.${process.pid}.tmp`;
+      await writeFile(tmp, JSON.stringify(msg, null, 2));
+      await rename(tmp, targetPath);
       return msg;
     }
     await sleep(POLL_INTERVAL_MS);

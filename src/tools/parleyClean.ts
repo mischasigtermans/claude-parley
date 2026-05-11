@@ -53,8 +53,7 @@ function countRemoved(result: SweepResult): number {
   return (
     result.removed.sessions.length +
     result.removed.sentinels.length +
-    result.removed.headless.length +
-    result.removed.killed.length
+    result.removed.headless.length
   );
 }
 
@@ -68,10 +67,6 @@ function formatReport(result: SweepResult, totalRemoved: number, now: Date): str
     lines.push(`${verb}:`);
     if (result.removed.sessions.length > 0) {
       lines.push(`  • ${result.removed.sessions.length} stale session manifest(s) (heartbeat >1h, dead PID or missing path)`);
-    }
-    if (result.removed.killed.length > 0) {
-      const verbKill = result.dryRun ? 'would terminate' : 'terminated';
-      lines.push(`  • ${verbKill} ${result.removed.killed.length} orphan MCP server process(es): ${result.removed.killed.join(', ')}`);
     }
     if (result.removed.sentinels.length > 0) {
       lines.push(`  • ${result.removed.sentinels.length} dead PID sentinel(s)`);

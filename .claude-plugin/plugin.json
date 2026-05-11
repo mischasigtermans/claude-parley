@@ -1,7 +1,7 @@
 {
   "name": "parley",
   "description": "Cross-session peer agents for Claude Code. Ask one project what another knows, with full context and memory across turns.",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "author": {
     "name": "Mischa Sigtermans"
   },

@@ -118,11 +118,6 @@ export function findPeerInFile(
   return null;
 }
 
-export async function resolvePeerConfig(alias: string): Promise<ResolvedPeerConfig | null> {
-  const file = await readPeers();
-  return resolvePeerConfigFromFile(alias, file);
-}
-
 export function resolvePeerConfigFromFile(
   alias: string,
   file: PeersFile,
