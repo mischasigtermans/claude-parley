@@ -59,7 +59,6 @@ export async function routeAsk(input: AskInput): Promise<AskResult> {
     );
   }
 
-  const resolved = resolvePeerConfigFromFile(peer.alias, peersFile);
   const live = await resolveListening(peer.alias, peer.config, peer.sessionId, input.fromSessionId);
   switch (live.kind) {
     case 'single': {
@@ -93,6 +92,7 @@ export async function routeAsk(input: AskInput): Promise<AskResult> {
   const mode: AskMode = input.mode ?? 'default';
   const wrappedPrompt = mode === 'deep' ? input.question : CONCISE_PREAMBLE + input.question;
 
+  const resolved = resolvePeerConfigFromFile(peer.alias, peersFile);
   const model = resolved?.resolvedModel ?? peersFile.defaults?.model;
   const mcpServers = resolved?.resolvedMcpServers ?? {};
   const skipPermissions = resolved?.resolvedSkipPermissions ?? peer.config.skipPermissions ?? true;

@@ -11,10 +11,19 @@ import {
 import { readHeadless } from '../registry/headless.js';
 import { expandHome, paths } from '../registry/paths.js';
 
+interface Row {
+  peer: string;
+  source: string;
+  mode: 'headless' | 'listening';
+  history: string;
+  path: string;
+  notes: string[];
+}
+
 export const parleyPeers: ToolDef = {
   name: 'parley_peers',
   description:
-    "List all addressable peers on this machine. Call this FIRST whenever the user references another project by name (e.g. 'ask stagent about X', 'check with onoma', 'what does Y think'). Each peer gets a headless row (always reachable, alias-keyed) plus one row per /parley listen session at that path (addressable as alias:sid). Use the result to pick the right peer ref before calling parley_ask. Returns a markdown table: Peer, Source (Code / Code CLI / Cowork / '-'), Mode (headless/listening), History (turns of cached headless conversation, or '-'), Path, Notes.",
+    "List all addressable peers on this machine. Call this FIRST whenever the user references another project by name (e.g. 'ask stagent about X', 'check with onoma', 'what does Y think'). Each peer gets a headless row (always reachable, alias-keyed) plus one row per /parley listen session at that path (addressable as alias:sid). Use the result to pick the right peer ref before calling parley_ask. Returns a markdown table: Peer, Source (Code / Code CLI / Cowork / '-'), Mode (headless/listening), History (turns of cached headless conversation from the calling project, or '-'), Path, Notes.",
   inputSchema: {
     type: 'object',
     properties: {},
@@ -28,15 +37,6 @@ export const parleyPeers: ToolDef = {
     const mySid = myManifest?.sessionId ?? sid;
     const myPath = myManifest?.projectPath ?? ctx.getCurrentProjectPath();
     const fromProjectId = await paths.projectId(ctx.getCurrentProjectPath());
-
-    interface Row {
-      peer: string;
-      source: string;
-      mode: 'headless' | 'listening';
-      history: string;
-      path: string;
-      notes: string[];
-    }
 
     const rows: Row[] = [];
     const seenPaths = new Set<string>();
@@ -84,58 +84,58 @@ export const parleyPeers: ToolDef = {
       (r) => `| ${r.peer} | ${r.source} | ${r.mode} | ${r.history} | \`${r.path}\` | ${r.notes.join('. ')} |`,
     );
     return [header, ...body].join('\n');
-
-    async function pushRowsForPath(opts: {
-      rows: Row[];
-      alias: string;
-      displayPath: string;
-      sessions: SessionManifest[];
-      discovered: boolean;
-      description?: string;
-      mySid: string | null;
-      skipHeadless: boolean;
-      fromProjectId: string;
-    }) {
-      const listening = opts.sessions.filter((s) => s.status === 'listening' && s.sessionId !== opts.mySid);
-      const nonListening = opts.sessions.filter((s) => s.status !== 'listening' && s.sessionId !== opts.mySid);
-
-      if (!opts.skipHeadless) {
-        const headless = await readHeadless(opts.fromProjectId, opts.alias);
-        const history = headless
-          ? `${headless.turnCount} ${headless.turnCount === 1 ? 'turn' : 'turns'}`
-          : '-';
-
-        const headlessNotes: string[] = [];
-        if (opts.discovered) headlessNotes.push('discovered');
-        if (nonListening.length > 0) {
-          headlessNotes.push(`${nonListening.length} active window${nonListening.length === 1 ? '' : 's'}`);
-        }
-        if (opts.description) headlessNotes.push(opts.description);
-
-        const seed = nonListening[0] ?? listening[0];
-        opts.rows.push({
-          peer: opts.alias,
-          source: formatSource(seed?.platform, seed?.mode),
-          mode: 'headless',
-          history,
-          path: opts.displayPath,
-          notes: headlessNotes,
-        });
-      }
-
-      for (const s of listening) {
-        opts.rows.push({
-          peer: `${opts.alias}:${s.sessionId}`,
-          source: formatSource(s.platform, s.mode),
-          mode: 'listening',
-          history: '-',
-          path: opts.displayPath,
-          notes: [],
-        });
-      }
-    }
   },
 };
+
+async function pushRowsForPath(opts: {
+  rows: Row[];
+  alias: string;
+  displayPath: string;
+  sessions: SessionManifest[];
+  discovered: boolean;
+  description?: string;
+  mySid: string | null;
+  skipHeadless: boolean;
+  fromProjectId: string;
+}): Promise<void> {
+  const listening = opts.sessions.filter((s) => s.status === 'listening' && s.sessionId !== opts.mySid);
+  const nonListening = opts.sessions.filter((s) => s.status !== 'listening' && s.sessionId !== opts.mySid);
+
+  if (!opts.skipHeadless) {
+    const headless = await readHeadless(opts.fromProjectId, opts.alias);
+    const history = headless
+      ? `${headless.turnCount} ${headless.turnCount === 1 ? 'turn' : 'turns'}`
+      : '-';
+
+    const headlessNotes: string[] = [];
+    if (opts.discovered) headlessNotes.push('discovered');
+    if (nonListening.length > 0) {
+      headlessNotes.push(`${nonListening.length} active window${nonListening.length === 1 ? '' : 's'}`);
+    }
+    if (opts.description) headlessNotes.push(opts.description);
+
+    const seed = nonListening[0] ?? listening[0];
+    opts.rows.push({
+      peer: opts.alias,
+      source: formatSource(seed?.platform, seed?.mode),
+      mode: 'headless',
+      history,
+      path: opts.displayPath,
+      notes: headlessNotes,
+    });
+  }
+
+  for (const s of listening) {
+    opts.rows.push({
+      peer: `${opts.alias}:${s.sessionId}`,
+      source: formatSource(s.platform, s.mode),
+      mode: 'listening',
+      history: '-',
+      path: opts.displayPath,
+      notes: [],
+    });
+  }
+}
 
 function formatSource(platform?: Platform, mode?: Mode): string {
   if (mode === 'cowork') return 'Cowork';

@@ -22,6 +22,34 @@ export interface Message {
 
 const POLL_INTERVAL_MS = 500;
 
+/**
+ * Walk `dir` and yield each `.json` entry as a parsed Message, skipping
+ * malformed files and entries that vanish mid-read. Callers express their
+ * own predicates and side effects on top.
+ */
+async function* readMessages(
+  dir: string,
+): AsyncIterable<{ name: string; path: string; message: Message }> {
+  const entries = await readdir(dir).catch(() => [] as string[]);
+  for (const name of entries) {
+    if (!name.endsWith('.json')) continue;
+    const path = join(dir, name);
+    let raw: string;
+    try {
+      raw = await readFile(path, 'utf8');
+    } catch {
+      continue;
+    }
+    let message: Message;
+    try {
+      message = JSON.parse(raw) as Message;
+    } catch {
+      continue;
+    }
+    yield { name, path, message };
+  }
+}
+
 export async function sendMessage(opts: {
   fromSessionId: string;
   fromProject: string;
@@ -78,22 +106,7 @@ export async function waitForMessage(
   const mark = opts.mark ?? 'read';
 
   while (Date.now() < deadline) {
-    const entries = await readdir(inbox).catch(() => [] as string[]);
-    for (const entry of entries) {
-      if (!entry.endsWith('.json')) continue;
-      const sourcePath = join(inbox, entry);
-      let raw: string;
-      try {
-        raw = await readFile(sourcePath, 'utf8');
-      } catch {
-        continue;
-      }
-      let msg: Message;
-      try {
-        msg = JSON.parse(raw) as Message;
-      } catch {
-        continue;
-      }
+    for await (const { name, path: sourcePath, message: msg } of readMessages(inbox)) {
       if (msg.status !== 'pending') continue;
       if (msg.from === sessionId) continue;
       if (!predicate(msg)) continue;
@@ -105,7 +118,7 @@ export async function waitForMessage(
           ? paths.sessionInboxInProgress(sessionId)
           : paths.sessionInboxRead(sessionId);
       await mkdir(targetDir, { recursive: true });
-      const targetPath = join(targetDir, entry);
+      const targetPath = join(targetDir, name);
 
       try {
         await rename(sourcePath, targetPath);
@@ -114,11 +127,11 @@ export async function waitForMessage(
         throw err;
       }
 
-      msg.status = mark;
+      const claimed: Message = { ...msg, status: mark };
       const tmp = `${targetPath}.${process.pid}.tmp`;
-      await writeFile(tmp, JSON.stringify(msg, null, 2));
+      await writeFile(tmp, JSON.stringify(claimed, null, 2));
       await rename(tmp, targetPath);
-      return msg;
+      return claimed;
     }
     await sleep(POLL_INTERVAL_MS);
   }
@@ -169,28 +182,18 @@ export async function recoverStuckInProgress(
   olderThanMs: number,
 ): Promise<number> {
   const dir = paths.sessionInboxInProgress(sessionId);
-  let entries: string[];
-  try {
-    entries = await readdir(dir);
-  } catch {
-    return 0;
-  }
   const cutoff = Date.now() - olderThanMs;
   let recovered = 0;
-  for (const entry of entries) {
-    if (!entry.endsWith('.json')) continue;
-    const path = join(dir, entry);
+  for await (const { name, path, message: msg } of readMessages(dir)) {
     try {
       const s = await stat(path);
       if (s.mtimeMs >= cutoff) continue;
-      const raw = await readFile(path, 'utf8');
-      const msg = JSON.parse(raw) as Message;
-      msg.status = 'pending';
+      const restored: Message = { ...msg, status: 'pending' };
       const inboxDir = paths.sessionInbox(sessionId);
       await mkdir(inboxDir, { recursive: true });
-      const target = join(inboxDir, entry);
+      const target = join(inboxDir, name);
       const tmp = `${target}.${process.pid}.tmp`;
-      await writeFile(tmp, JSON.stringify(msg, null, 2));
+      await writeFile(tmp, JSON.stringify(restored, null, 2));
       await rename(tmp, target);
       await unlink(path).catch(() => {});
       recovered++;
@@ -253,23 +256,9 @@ export async function pruneRead(sessionId: string, olderThanMs: number): Promise
 }
 
 export async function listInbox(sessionId: string): Promise<Message[]> {
-  const inbox = paths.sessionInbox(sessionId);
-  let entries: string[];
-  try {
-    entries = await readdir(inbox);
-  } catch (err) {
-    if (isErrnoException(err) && err.code === 'ENOENT') return [];
-    throw err;
-  }
   const out: Message[] = [];
-  for (const entry of entries) {
-    if (!entry.endsWith('.json')) continue;
-    try {
-      const raw = await readFile(join(inbox, entry), 'utf8');
-      out.push(JSON.parse(raw) as Message);
-    } catch {
-      // ignore malformed
-    }
+  for await (const { message } of readMessages(paths.sessionInbox(sessionId))) {
+    out.push(message);
   }
   return out;
 }

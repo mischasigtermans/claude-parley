@@ -14758,6 +14758,27 @@ import { mkdir as mkdir4, readdir as readdir2, readFile as readFile5, writeFile 
 import { join as join2 } from "node:path";
 import { randomBytes } from "node:crypto";
 var POLL_INTERVAL_MS = 500;
+async function* readMessages(dir) {
+  const entries = await readdir2(dir).catch(() => []);
+  for (const name of entries) {
+    if (!name.endsWith(".json"))
+      continue;
+    const path = join2(dir, name);
+    let raw;
+    try {
+      raw = await readFile5(path, "utf8");
+    } catch {
+      continue;
+    }
+    let message;
+    try {
+      message = JSON.parse(raw);
+    } catch {
+      continue;
+    }
+    yield { name, path, message };
+  }
+}
 async function sendMessage(opts) {
   try {
     await access(paths.sessionManifest(opts.toSessionId));
@@ -14796,23 +14817,7 @@ async function waitForMessage(sessionId, predicate, opts = { timeoutMs: 90000 })
   const deadline = Date.now() + opts.timeoutMs;
   const mark = opts.mark ?? "read";
   while (Date.now() < deadline) {
-    const entries = await readdir2(inbox).catch(() => []);
-    for (const entry of entries) {
-      if (!entry.endsWith(".json"))
-        continue;
-      const sourcePath = join2(inbox, entry);
-      let raw;
-      try {
-        raw = await readFile5(sourcePath, "utf8");
-      } catch {
-        continue;
-      }
-      let msg;
-      try {
-        msg = JSON.parse(raw);
-      } catch {
-        continue;
-      }
+    for await (const { name, path: sourcePath, message: msg } of readMessages(inbox)) {
       if (msg.status !== "pending")
         continue;
       if (msg.from === sessionId)
@@ -14823,7 +14828,7 @@ async function waitForMessage(sessionId, predicate, opts = { timeoutMs: 90000 })
         return msg;
       const targetDir = mark === "in-progress" ? paths.sessionInboxInProgress(sessionId) : paths.sessionInboxRead(sessionId);
       await mkdir4(targetDir, { recursive: true });
-      const targetPath = join2(targetDir, entry);
+      const targetPath = join2(targetDir, name);
       try {
         await rename2(sourcePath, targetPath);
       } catch (err) {
@@ -14831,11 +14836,11 @@ async function waitForMessage(sessionId, predicate, opts = { timeoutMs: 90000 })
           continue;
         throw err;
       }
-      msg.status = mark;
+      const claimed = { ...msg, status: mark };
       const tmp = `${targetPath}.${process.pid}.tmp`;
-      await writeFile3(tmp, JSON.stringify(msg, null, 2));
+      await writeFile3(tmp, JSON.stringify(claimed, null, 2));
       await rename2(tmp, targetPath);
-      return msg;
+      return claimed;
     }
     await sleep2(POLL_INTERVAL_MS);
   }
@@ -14867,30 +14872,19 @@ async function completeInProgress(sessionId, messageId) {
 }
 async function recoverStuckInProgress(sessionId, olderThanMs) {
   const dir = paths.sessionInboxInProgress(sessionId);
-  let entries;
-  try {
-    entries = await readdir2(dir);
-  } catch {
-    return 0;
-  }
   const cutoff = Date.now() - olderThanMs;
   let recovered = 0;
-  for (const entry of entries) {
-    if (!entry.endsWith(".json"))
-      continue;
-    const path = join2(dir, entry);
+  for await (const { name, path, message: msg } of readMessages(dir)) {
     try {
       const s = await stat(path);
       if (s.mtimeMs >= cutoff)
         continue;
-      const raw = await readFile5(path, "utf8");
-      const msg = JSON.parse(raw);
-      msg.status = "pending";
+      const restored = { ...msg, status: "pending" };
       const inboxDir = paths.sessionInbox(sessionId);
       await mkdir4(inboxDir, { recursive: true });
-      const target = join2(inboxDir, entry);
+      const target = join2(inboxDir, name);
       const tmp = `${target}.${process.pid}.tmp`;
-      await writeFile3(tmp, JSON.stringify(msg, null, 2));
+      await writeFile3(tmp, JSON.stringify(restored, null, 2));
       await rename2(tmp, target);
       await unlink3(path).catch(() => {});
       recovered++;
@@ -14985,7 +14979,6 @@ async function routeAsk(input) {
   if (peer.sessionId && peer.sessionId === input.fromSessionId) {
     throw new Error(`parley: "${input.peerRef}" is this session. You cannot ask yourself. Use the current session's tools directly.`);
   }
-  const resolved2 = resolvePeerConfigFromFile(peer.alias, peersFile);
   const live = await resolveListening(peer.alias, peer.config, peer.sessionId, input.fromSessionId);
   switch (live.kind) {
     case "single": {
@@ -15009,6 +15002,7 @@ async function routeAsk(input) {
   const driver = getClaudeDriver();
   const mode = input.mode ?? "default";
   const wrappedPrompt = mode === "deep" ? input.question : CONCISE_PREAMBLE + input.question;
+  const resolved2 = resolvePeerConfigFromFile(peer.alias, peersFile);
   const model = resolved2?.resolvedModel ?? peersFile.defaults?.model;
   const mcpServers = resolved2?.resolvedMcpServers ?? {};
   const skipPermissions = resolved2?.resolvedSkipPermissions ?? peer.config.skipPermissions ?? true;
@@ -15613,7 +15607,7 @@ var parleyLog = {
 // src/tools/parleyPeers.ts
 var parleyPeers = {
   name: "parley_peers",
-  description: "List all addressable peers on this machine. Call this FIRST whenever the user references another project by name (e.g. 'ask stagent about X', 'check with onoma', 'what does Y think'). Each peer gets a headless row (always reachable, alias-keyed) plus one row per /parley listen session at that path (addressable as alias:sid). Use the result to pick the right peer ref before calling parley_ask. Returns a markdown table: Peer, Source (Code / Code CLI / Cowork / '-'), Mode (headless/listening), History (turns of cached headless conversation, or '-'), Path, Notes.",
+  description: "List all addressable peers on this machine. Call this FIRST whenever the user references another project by name (e.g. 'ask stagent about X', 'check with onoma', 'what does Y think'). Each peer gets a headless row (always reachable, alias-keyed) plus one row per /parley listen session at that path (addressable as alias:sid). Use the result to pick the right peer ref before calling parley_ask. Returns a markdown table: Peer, Source (Code / Code CLI / Cowork / '-'), Mode (headless/listening), History (turns of cached headless conversation from the calling project, or '-'), Path, Notes.",
   inputSchema: {
     type: "object",
     properties: {},
@@ -15671,43 +15665,43 @@ var parleyPeers = {
     const body = rows.map((r) => `| ${r.peer} | ${r.source} | ${r.mode} | ${r.history} | \`${r.path}\` | ${r.notes.join(". ")} |`);
     return [header, ...body].join(`
 `);
-    async function pushRowsForPath(opts) {
-      const listening = opts.sessions.filter((s) => s.status === "listening" && s.sessionId !== opts.mySid);
-      const nonListening = opts.sessions.filter((s) => s.status !== "listening" && s.sessionId !== opts.mySid);
-      if (!opts.skipHeadless) {
-        const headless = await readHeadless(opts.fromProjectId, opts.alias);
-        const history = headless ? `${headless.turnCount} ${headless.turnCount === 1 ? "turn" : "turns"}` : "-";
-        const headlessNotes = [];
-        if (opts.discovered)
-          headlessNotes.push("discovered");
-        if (nonListening.length > 0) {
-          headlessNotes.push(`${nonListening.length} active window${nonListening.length === 1 ? "" : "s"}`);
-        }
-        if (opts.description)
-          headlessNotes.push(opts.description);
-        const seed = nonListening[0] ?? listening[0];
-        opts.rows.push({
-          peer: opts.alias,
-          source: formatSource(seed?.platform, seed?.mode),
-          mode: "headless",
-          history,
-          path: opts.displayPath,
-          notes: headlessNotes
-        });
-      }
-      for (const s of listening) {
-        opts.rows.push({
-          peer: `${opts.alias}:${s.sessionId}`,
-          source: formatSource(s.platform, s.mode),
-          mode: "listening",
-          history: "-",
-          path: opts.displayPath,
-          notes: []
-        });
-      }
-    }
   }
 };
+async function pushRowsForPath(opts) {
+  const listening = opts.sessions.filter((s) => s.status === "listening" && s.sessionId !== opts.mySid);
+  const nonListening = opts.sessions.filter((s) => s.status !== "listening" && s.sessionId !== opts.mySid);
+  if (!opts.skipHeadless) {
+    const headless = await readHeadless(opts.fromProjectId, opts.alias);
+    const history = headless ? `${headless.turnCount} ${headless.turnCount === 1 ? "turn" : "turns"}` : "-";
+    const headlessNotes = [];
+    if (opts.discovered)
+      headlessNotes.push("discovered");
+    if (nonListening.length > 0) {
+      headlessNotes.push(`${nonListening.length} active window${nonListening.length === 1 ? "" : "s"}`);
+    }
+    if (opts.description)
+      headlessNotes.push(opts.description);
+    const seed = nonListening[0] ?? listening[0];
+    opts.rows.push({
+      peer: opts.alias,
+      source: formatSource(seed?.platform, seed?.mode),
+      mode: "headless",
+      history,
+      path: opts.displayPath,
+      notes: headlessNotes
+    });
+  }
+  for (const s of listening) {
+    opts.rows.push({
+      peer: `${opts.alias}:${s.sessionId}`,
+      source: formatSource(s.platform, s.mode),
+      mode: "listening",
+      history: "-",
+      path: opts.displayPath,
+      notes: []
+    });
+  }
+}
 function formatSource(platform, mode) {
   if (mode === "cowork")
     return "Cowork";
