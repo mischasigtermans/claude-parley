@@ -48,7 +48,7 @@ export const parleyPeers: ToolDef = {
       await pushRowsForPath({
         rows,
         alias,
-        displayPath: cfg.path,
+        displayPath: formatPath(cfg.path, cfg.type),
         sessions,
         discovered: false,
         description: cfg.description,
@@ -142,4 +142,17 @@ function formatSource(platform?: Platform, mode?: Mode): string {
   if (platform === 'cli') return 'Code CLI';
   if (platform === 'desktop') return 'Code';
   return '-';
+}
+
+/**
+ * Display the peer's path. For typed peers whose path lives inside the Claude
+ * Code plugin cache, render as `<plugin>@<marketplace>` instead of the full
+ * cache path (cosmetic noise). Falls back to the raw path on anything else.
+ */
+function formatPath(rawPath: string, type?: string): string {
+  if (!type) return rawPath;
+  const match = rawPath.match(/\/\.claude\/plugins\/cache\/([^/]+)\/([^/]+)\/[^/]+\/?$/);
+  if (!match) return rawPath;
+  const [, marketplace, plugin] = match;
+  return `${plugin}@${marketplace}`;
 }

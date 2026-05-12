@@ -15672,7 +15672,7 @@ var parleyPeers = {
       await pushRowsForPath({
         rows,
         alias,
-        displayPath: cfg.path,
+        displayPath: formatPath(cfg.path, cfg.type),
         sessions,
         discovered: false,
         description: cfg.description,
@@ -15752,6 +15752,15 @@ function formatSource(platform, mode) {
   if (platform === "desktop")
     return "Code";
   return "-";
+}
+function formatPath(rawPath, type) {
+  if (!type)
+    return rawPath;
+  const match = rawPath.match(/\/\.claude\/plugins\/cache\/([^/]+)\/([^/]+)\/[^/]+\/?$/);
+  if (!match)
+    return rawPath;
+  const [, marketplace, plugin] = match;
+  return `${plugin}@${marketplace}`;
 }
 
 // src/tools/parleyReceiveNext.ts
