@@ -1,8 +1,23 @@
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { createHash } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const exec = promisify(execFile);
 
 function parleyDir(): string {
   return process.env.PARLEY_DIR ?? join(homedir(), '.claude', 'parley');
+}
+
+async function gitRemote(cwd: string): Promise<string | null> {
+  try {
+    const { stdout } = await exec('git', ['config', '--get', 'remote.origin.url'], { cwd });
+    const url = stdout.trim();
+    return url.length > 0 ? url : null;
+  } catch {
+    return null;
+  }
 }
 
 export const paths = {
@@ -22,9 +37,24 @@ export const paths = {
     join(parleyDir(), 'sessions', sid, 'inbox', 'in-progress'),
   sessionInboxRead: (sid: string) => join(parleyDir(), 'sessions', sid, 'inbox', 'read'),
   sessionOutbox: (sid: string) => join(parleyDir(), 'sessions', sid, 'outbox'),
-  headlessFor: (alias: string) => join(parleyDir(), 'headless', `${alias}.json`),
-  headlessLockFor: (alias: string) => join(parleyDir(), 'locks', `${alias}.lock`),
-  logFor: (alias: string) => join(parleyDir(), 'logs', `${alias}.md`),
+  headlessProjectDir: (projectId: string) => join(parleyDir(), 'headless', projectId),
+  headlessFor: (projectId: string, alias: string) =>
+    join(parleyDir(), 'headless', projectId, `${alias}.json`),
+  headlessLockFor: (projectId: string, alias: string) =>
+    join(parleyDir(), 'locks', `${projectId}-${alias}.lock`),
+  logsProjectDir: (projectId: string) => join(parleyDir(), 'logs', projectId),
+  logFor: (projectId: string, alias: string) =>
+    join(parleyDir(), 'logs', projectId, `${alias}.md`),
+  /**
+   * Compute the project_id for a CWD. Matches the personas plugin algorithm:
+   * SHA1 of git remote URL when available, fallback to SHA1 of CWD. First 12 hex chars.
+   * Replicating identically lets parley and personas agree on what a 'project' is.
+   */
+  async projectId(cwd: string): Promise<string> {
+    const remote = await gitRemote(cwd);
+    const source = remote ?? cwd;
+    return createHash('sha1').update(source).digest('hex').slice(0, 12);
+  },
 } as const;
 
 export function expandHome(path: string): string {

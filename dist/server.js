@@ -14071,8 +14071,21 @@ import { existsSync as existsSync2 } from "node:fs";
 // src/registry/paths.ts
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+var exec = promisify(execFile);
 function parleyDir() {
   return process.env.PARLEY_DIR ?? join(homedir(), ".claude", "parley");
+}
+async function gitRemote(cwd) {
+  try {
+    const { stdout } = await exec("git", ["config", "--get", "remote.origin.url"], { cwd });
+    const url = stdout.trim();
+    return url.length > 0 ? url : null;
+  } catch {
+    return null;
+  }
 }
 var paths = {
   get root() {
@@ -14106,9 +14119,16 @@ var paths = {
   sessionInboxInProgress: (sid) => join(parleyDir(), "sessions", sid, "inbox", "in-progress"),
   sessionInboxRead: (sid) => join(parleyDir(), "sessions", sid, "inbox", "read"),
   sessionOutbox: (sid) => join(parleyDir(), "sessions", sid, "outbox"),
-  headlessFor: (alias) => join(parleyDir(), "headless", `${alias}.json`),
-  headlessLockFor: (alias) => join(parleyDir(), "locks", `${alias}.lock`),
-  logFor: (alias) => join(parleyDir(), "logs", `${alias}.md`)
+  headlessProjectDir: (projectId) => join(parleyDir(), "headless", projectId),
+  headlessFor: (projectId, alias) => join(parleyDir(), "headless", projectId, `${alias}.json`),
+  headlessLockFor: (projectId, alias) => join(parleyDir(), "locks", `${projectId}-${alias}.lock`),
+  logsProjectDir: (projectId) => join(parleyDir(), "logs", projectId),
+  logFor: (projectId, alias) => join(parleyDir(), "logs", projectId, `${alias}.md`),
+  async projectId(cwd) {
+    const remote = await gitRemote(cwd);
+    const source = remote ?? cwd;
+    return createHash("sha1").update(source).digest("hex").slice(0, 12);
+  }
 };
 function expandHome(path) {
   if (path.startsWith("~")) {
@@ -14519,9 +14539,9 @@ async function findListeningByPath(projectPath) {
 
 // src/registry/headless.ts
 import { readFile as readFile4, unlink as unlink2 } from "node:fs/promises";
-async function readHeadless(alias) {
+async function readHeadless(projectId, alias) {
   try {
-    const raw = await readFile4(paths.headlessFor(alias), "utf8");
+    const raw = await readFile4(paths.headlessFor(projectId, alias), "utf8");
     return JSON.parse(raw);
   } catch (err) {
     if (isErrnoException(err) && err.code === "ENOENT")
@@ -14530,11 +14550,11 @@ async function readHeadless(alias) {
   }
 }
 async function writeHeadless(record3) {
-  await atomicWriteJSON(paths.headlessFor(record3.alias), record3);
+  await atomicWriteJSON(paths.headlessFor(record3.projectId, record3.alias), record3);
 }
-async function clearHeadless(alias) {
+async function clearHeadless(projectId, alias) {
   try {
-    await unlink2(paths.headlessFor(alias));
+    await unlink2(paths.headlessFor(projectId, alias));
     return true;
   } catch (err) {
     if (isErrnoException(err) && err.code === "ENOENT")
@@ -14922,8 +14942,8 @@ function sleep2(ms) {
 
 // src/routing/transcript.ts
 import { appendFile, mkdir as mkdir5, readFile as readFile6 } from "node:fs/promises";
-async function appendTurn(alias, fromProject, question, answer, via) {
-  await mkdir5(paths.logsDir, { recursive: true });
+async function appendTurn(projectId, alias, fromProject, question, answer, via) {
+  await mkdir5(paths.logsProjectDir(projectId), { recursive: true });
   const ts = new Date().toISOString();
   const block = `## ${ts} · from ${fromProject} (${via})
 
@@ -14936,11 +14956,11 @@ ${answer}
 ---
 
 `;
-  await appendFile(paths.logFor(alias), block, "utf8");
+  await appendFile(paths.logFor(projectId, alias), block, "utf8");
 }
-async function readTranscript(alias, tail) {
+async function readTranscript(projectId, alias, tail) {
   try {
-    const content = await readFile6(paths.logFor(alias), "utf8");
+    const content = await readFile6(paths.logFor(projectId, alias), "utf8");
     if (tail <= 0)
       return content;
     const blocks = content.split(/^---\s*$/m).filter((b) => b.trim().length > 0);
@@ -14972,7 +14992,7 @@ async function routeAsk(input) {
   switch (live.kind) {
     case "single": {
       const answer = await routeLive({ ...input, target: live.session });
-      await appendTurn(peer.alias, input.fromProject, input.question, answer, "live");
+      await appendTurn(input.fromProjectId, peer.alias, input.fromProject, input.question, answer, "live");
       return { alias: peer.alias, tier: "live", answer };
     }
     case "multiple": {
@@ -14994,8 +15014,8 @@ async function routeAsk(input) {
   const model = resolved2?.resolvedModel ?? peersFile.defaults?.model;
   const mcpServers = resolved2?.resolvedMcpServers ?? {};
   const skipPermissions = resolved2?.resolvedSkipPermissions ?? peer.config.skipPermissions ?? true;
-  return withLock(paths.headlessLockFor(peer.alias), async () => {
-    const cached2 = await readHeadless(peer.alias);
+  return withLock(paths.headlessLockFor(input.fromProjectId, peer.alias), async () => {
+    const cached2 = await readHeadless(input.fromProjectId, peer.alias);
     let tier;
     let result;
     const baseSpawn = {
@@ -15022,6 +15042,7 @@ async function routeAsk(input) {
     }
     const now = new Date().toISOString();
     const next = {
+      projectId: input.fromProjectId,
       alias: peer.alias,
       claudeSessionId: result.sessionId,
       cwd,
@@ -15030,7 +15051,7 @@ async function routeAsk(input) {
       turnCount: (cached2?.turnCount ?? 0) + 1
     };
     await writeHeadless(next);
-    await appendTurn(peer.alias, input.fromProject, input.question, result.output, tier);
+    await appendTurn(input.fromProjectId, peer.alias, input.fromProject, input.question, result.output, tier);
     return { alias: peer.alias, tier, answer: result.output };
   });
 }
@@ -15132,11 +15153,13 @@ var parleyAsk = {
     }
     const manifest = await readManifest(sid);
     const fromProject = manifest?.alias ?? ctx.getCurrentProjectName();
+    const fromProjectId = await paths.projectId(ctx.getCurrentProjectPath());
     const result = await routeAsk({
       peerRef: peer,
       question,
       fromSessionId: sid,
       fromProject,
+      fromProjectId,
       timeoutMs,
       mode
     });
@@ -15212,23 +15235,37 @@ async function sweepSentinels(removed, dryRun) {
   }
 }
 async function sweepHeadless(peerAliases, removed, dryRun) {
-  let entries;
+  let projectDirs;
   try {
-    entries = await readdir3(paths.headlessDir);
+    projectDirs = await readdir3(paths.headlessDir);
   } catch (err) {
     if (isErrnoException(err) && err.code === "ENOENT")
       return;
     throw err;
   }
-  for (const file of entries) {
-    if (!file.endsWith(".json"))
-      continue;
-    const alias = file.slice(0, -".json".length);
-    if (peerAliases.has(alias))
-      continue;
-    if (!dryRun)
-      await unlink4(join3(paths.headlessDir, file)).catch(() => {});
-    removed.headless.push(alias);
+  for (const projectId of projectDirs) {
+    const projectDir = paths.headlessProjectDir(projectId);
+    let entries;
+    try {
+      const st = await stat2(projectDir);
+      if (!st.isDirectory())
+        continue;
+      entries = await readdir3(projectDir);
+    } catch (err) {
+      if (isErrnoException(err) && err.code === "ENOENT")
+        continue;
+      throw err;
+    }
+    for (const file of entries) {
+      if (!file.endsWith(".json"))
+        continue;
+      const alias = file.slice(0, -".json".length);
+      if (peerAliases.has(alias))
+        continue;
+      if (!dryRun)
+        await unlink4(join3(projectDir, file)).catch(() => {});
+      removed.headless.push(alias);
+    }
   }
 }
 async function collectAdvisories(peers, advisories) {
@@ -15515,7 +15552,7 @@ var parleyListen = {
 // src/tools/parleyLog.ts
 var parleyLog = {
   name: "parley_log",
-  description: "Return the recent conversation transcript with a peer (Q&A history across all sessions and tiers). Useful for reviewing what was previously asked or answered.",
+  description: "Return the recent conversation transcript with a peer from this project (Q&A history). Each (asker project, peer) pair has its own transcript; this returns the calling project's. Useful for reviewing what was previously asked or answered from here.",
   inputSchema: {
     type: "object",
     properties: {
@@ -15525,11 +15562,12 @@ var parleyLog = {
     required: ["alias"],
     additionalProperties: false
   },
-  async handler(args) {
+  async handler(args, ctx) {
     const alias = String(args.alias);
     const tail = typeof args.tail === "number" ? args.tail : 20;
-    const content = await readTranscript(alias, tail);
-    return content || `No transcript yet for "${alias}".`;
+    const fromProjectId = await paths.projectId(ctx.getCurrentProjectPath());
+    const content = await readTranscript(fromProjectId, alias, tail);
+    return content || `No transcript yet for "${alias}" from this project.`;
   }
 };
 
@@ -15549,6 +15587,7 @@ var parleyPeers = {
     const myManifest = sid ? await readManifest(sid) : null;
     const mySid = myManifest?.sessionId ?? sid;
     const myPath = myManifest?.projectPath ?? ctx.getCurrentProjectPath();
+    const fromProjectId = await paths.projectId(ctx.getCurrentProjectPath());
     const rows = [];
     const seenPaths = new Set;
     for (const [alias, cfg] of Object.entries(peersFile.peers)) {
@@ -15563,7 +15602,8 @@ var parleyPeers = {
         discovered: false,
         description: cfg.description,
         mySid,
-        skipHeadless: path === myPath
+        skipHeadless: path === myPath,
+        fromProjectId
       });
     }
     for (const s of live) {
@@ -15580,7 +15620,8 @@ var parleyPeers = {
         sessions,
         discovered: true,
         mySid,
-        skipHeadless: s.projectPath === myPath
+        skipHeadless: s.projectPath === myPath,
+        fromProjectId
       });
     }
     if (rows.length === 0) {
@@ -15595,7 +15636,7 @@ var parleyPeers = {
       const listening = opts.sessions.filter((s) => s.status === "listening" && s.sessionId !== opts.mySid);
       const nonListening = opts.sessions.filter((s) => s.status !== "listening" && s.sessionId !== opts.mySid);
       if (!opts.skipHeadless) {
-        const headless = await readHeadless(opts.alias);
+        const headless = await readHeadless(opts.fromProjectId, opts.alias);
         const history = headless ? `${headless.turnCount} ${headless.turnCount === 1 ? "turn" : "turns"}` : "-";
         const headlessNotes = [];
         if (opts.discovered)
@@ -15697,19 +15738,20 @@ var parleyRemove = {
 // src/tools/parleyReset.ts
 var parleyReset = {
   name: "parley_reset",
-  description: "Clear the cached headless Claude session for a peer so the next parley_ask spawns fresh. Use when the peer agent has gotten stuck, when you want a clean slate for a new line of questioning, or after pruning Claude Code transcripts.",
+  description: "Clear the cached headless Claude session for a peer in the calling project so the next parley_ask from here spawns fresh. Use when the peer agent has gotten stuck, when you want a clean slate for a new line of questioning, or after pruning Claude Code transcripts. Only affects this project's cached session; other projects keep their own.",
   inputSchema: {
     type: "object",
     properties: {
-      alias: { type: "string", description: "Peer alias whose headless session should be reset." }
+      alias: { type: "string", description: "Peer alias whose headless session should be reset (for the calling project)." }
     },
     required: ["alias"],
     additionalProperties: false
   },
-  async handler(args) {
+  async handler(args, ctx) {
     const alias = String(args.alias);
-    const cleared = await clearHeadless(alias);
-    return cleared ? `Cleared cached headless session for "${alias}". Next ask will spawn fresh.` : `No cached headless session for "${alias}".`;
+    const projectId = await paths.projectId(ctx.getCurrentProjectPath());
+    const cleared = await clearHeadless(projectId, alias);
+    return cleared ? `Cleared cached headless session for "${alias}" in this project. Next ask will spawn fresh.` : `No cached headless session for "${alias}" in this project.`;
   }
 };
 

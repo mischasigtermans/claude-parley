@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.3.0] - 2026-05-12
+
+Per-asker-project scoping for headless peer state. Each asking project now gets its own cached Claude session, transcript log, and turn count with each peer. Cross-asker context isolation by default.
+
+**Breaking**
+
+- Sid cache now keyed by `(asker_project_id, peer)` instead of `(peer)` alone. State moves to `~/.claude/parley/headless/<project_id>/<alias>.json`.
+- Transcript log scoped per `(asker_project_id, peer)`. State moves to `~/.claude/parley/logs/<project_id>/<alias>.md`.
+- Lock files scoped per `(asker_project_id, peer)`: `~/.claude/parley/locks/<project_id>-<alias>.lock`.
+- `parley_peers` History column shows turns from the calling project, not global. Visible behaviour change: users upgrading will see lower History counts. A `--global` aggregate flag may land in a later release if needed.
+- `parley_log <alias>` shows transcript from the calling project, not global.
+- `parley_reset <alias>` only clears the calling project's cached session, not other projects'.
+- `HeadlessRecord` gains `projectId: string`. Record is now self-describing.
+- `readHeadless(alias)` → `readHeadless(projectId, alias)`.
+- `clearHeadless(alias)` → `clearHeadless(projectId, alias)`.
+- `appendTurn(...)` and `readTranscript(...)` gain `projectId` as first parameter.
+
+**Added**
+
+- `paths.projectId(cwd)` (async): SHA1 of git remote URL when available, fallback to CWD. First 12 hex chars. Matches the personas plugin's algorithm so the two plugins compute identical IDs from the same CWD.
+- `paths.headlessProjectDir(projectId)` and `paths.logsProjectDir(projectId)` helpers for sweep/diagnostic tools.
+
+**Migration**
+
+No automatic migration of caches or logs. Existing global `~/.claude/parley/headless/<alias>.json` and `~/.claude/parley/logs/<alias>.md` files become orphaned and can be deleted manually. First call to each peer from each project triggers a fresh headless session.
+
+**Required upgrade step:** delete `~/.claude/parley/locks/*.lock` before installing v0.3.0. Stale locks from pre-scoped paths become invisible to the new scoped lock paths and can cause silent hangs.
+
 ## [0.2.3] - 2026-05-11
 
 Cleanup release: correctness fixes and a leaner API.

@@ -9,7 +9,7 @@ import {
   SessionManifest,
 } from '../registry/sessions.js';
 import { readHeadless } from '../registry/headless.js';
-import { expandHome } from '../registry/paths.js';
+import { expandHome, paths } from '../registry/paths.js';
 
 export const parleyPeers: ToolDef = {
   name: 'parley_peers',
@@ -27,6 +27,7 @@ export const parleyPeers: ToolDef = {
     const myManifest = sid ? await readManifest(sid) : null;
     const mySid = myManifest?.sessionId ?? sid;
     const myPath = myManifest?.projectPath ?? ctx.getCurrentProjectPath();
+    const fromProjectId = await paths.projectId(ctx.getCurrentProjectPath());
 
     interface Row {
       peer: string;
@@ -53,6 +54,7 @@ export const parleyPeers: ToolDef = {
         description: cfg.description,
         mySid,
         skipHeadless: path === myPath,
+        fromProjectId,
       });
     }
 
@@ -69,6 +71,7 @@ export const parleyPeers: ToolDef = {
         discovered: true,
         mySid,
         skipHeadless: s.projectPath === myPath,
+        fromProjectId,
       });
     }
 
@@ -91,12 +94,13 @@ export const parleyPeers: ToolDef = {
       description?: string;
       mySid: string | null;
       skipHeadless: boolean;
+      fromProjectId: string;
     }) {
       const listening = opts.sessions.filter((s) => s.status === 'listening' && s.sessionId !== opts.mySid);
       const nonListening = opts.sessions.filter((s) => s.status !== 'listening' && s.sessionId !== opts.mySid);
 
       if (!opts.skipHeadless) {
-        const headless = await readHeadless(opts.alias);
+        const headless = await readHeadless(opts.fromProjectId, opts.alias);
         const history = headless
           ? `${headless.turnCount} ${headless.turnCount === 1 ? 'turn' : 'turns'}`
           : '-';

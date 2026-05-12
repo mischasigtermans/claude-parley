@@ -22,9 +22,30 @@ describe('paths', () => {
     expect(paths.sessionInbox(sid)).toBe(join(t.tmp.root, 'sessions', sid, 'inbox'));
   });
 
-  it('builds headless and log paths correctly', () => {
-    expect(paths.headlessFor('lawyer')).toBe(join(t.tmp.root, 'headless', 'lawyer.json'));
-    expect(paths.logFor('lawyer')).toBe(join(t.tmp.root, 'logs', 'lawyer.md'));
+  it('builds project-scoped headless, log, and lock paths correctly', () => {
+    const proj = 'proj1234abcd';
+    expect(paths.headlessFor(proj, 'lawyer')).toBe(
+      join(t.tmp.root, 'headless', proj, 'lawyer.json'),
+    );
+    expect(paths.logFor(proj, 'lawyer')).toBe(join(t.tmp.root, 'logs', proj, 'lawyer.md'));
+    expect(paths.headlessLockFor(proj, 'lawyer')).toBe(
+      join(t.tmp.root, 'locks', `${proj}-lawyer.lock`),
+    );
+    expect(paths.headlessProjectDir(proj)).toBe(join(t.tmp.root, 'headless', proj));
+    expect(paths.logsProjectDir(proj)).toBe(join(t.tmp.root, 'logs', proj));
+  });
+
+  it('projectId is deterministic and 12 chars', async () => {
+    const id1 = await paths.projectId('/some/cwd/that/has/no/git');
+    const id2 = await paths.projectId('/some/cwd/that/has/no/git');
+    expect(id1).toBe(id2);
+    expect(id1).toMatch(/^[0-9a-f]{12}$/);
+  });
+
+  it('projectId differs across cwds without git', async () => {
+    const a = await paths.projectId('/a/cwd');
+    const b = await paths.projectId('/b/cwd');
+    expect(a).not.toBe(b);
   });
 
   it('builds Claude-PID sentinel paths', () => {

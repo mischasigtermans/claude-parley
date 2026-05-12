@@ -10,6 +10,7 @@ import { createMockDriver } from '../helpers/mock-driver.js';
 import { setup } from '../helpers/tmpdir.js';
 
 const FROM_SESSION = 'caller';
+const CALLER_PROJ = 'caller000000';
 
 async function registerCaller() {
   await writeManifest({
@@ -43,6 +44,7 @@ describe('routeAsk', () => {
         question: 'hi',
         fromSessionId: FROM_SESSION,
         fromProject: 'caller',
+        fromProjectId: CALLER_PROJ,
       }),
     ).rejects.toThrow(/not found/);
   });
@@ -59,13 +61,14 @@ describe('routeAsk', () => {
       question: 'q1',
       fromSessionId: FROM_SESSION,
       fromProject: 'caller',
+      fromProjectId: CALLER_PROJ,
     });
 
     expect(result.tier).toBe('headless-fresh');
     expect(result.alias).toBe('peer1');
     expect(result.answer).toBe('a1');
 
-    const cached = await readHeadless('peer1');
+    const cached = await readHeadless(CALLER_PROJ, 'peer1');
     expect(cached?.claudeSessionId).toBe('sid-fresh');
     expect(cached?.turnCount).toBe(1);
   });
@@ -77,6 +80,7 @@ describe('routeAsk', () => {
       peers: { peer1: { path: '/abs/peer1' } },
     });
     await writeHeadless({
+      projectId: CALLER_PROJ,
       alias: 'peer1',
       claudeSessionId: 'sid-before',
       cwd: '/abs/peer1',
@@ -90,11 +94,12 @@ describe('routeAsk', () => {
       question: 'q3',
       fromSessionId: FROM_SESSION,
       fromProject: 'caller',
+      fromProjectId: CALLER_PROJ,
     });
 
     expect(result.tier).toBe('headless-resumed');
     expect(mock.invocations[0].sessionId).toBe('sid-before');
-    const cached = await readHeadless('peer1');
+    const cached = await readHeadless(CALLER_PROJ, 'peer1');
     expect(cached?.turnCount).toBe(6);
     expect(cached?.claudeSessionId).toBe('sid-after');
   });
@@ -108,6 +113,7 @@ describe('routeAsk', () => {
     _setClaudeDriverForTesting(mock);
     await writePeers({ peers: { peer1: { path: '/abs/peer1' } } });
     await writeHeadless({
+      projectId: CALLER_PROJ,
       alias: 'peer1',
       claudeSessionId: 'sid-stale',
       cwd: '/abs/peer1',
@@ -121,6 +127,7 @@ describe('routeAsk', () => {
       question: 'q',
       fromSessionId: FROM_SESSION,
       fromProject: 'caller',
+      fromProjectId: CALLER_PROJ,
     });
 
     expect(result.tier).toBe('headless-fresh');
@@ -149,6 +156,7 @@ describe('routeAsk', () => {
       question: 'q',
       fromSessionId: FROM_SESSION,
       fromProject: 'caller',
+      fromProjectId: CALLER_PROJ,
     });
 
     expect(mock.invocations[0].model).toBe('opus');
@@ -168,6 +176,7 @@ describe('routeAsk', () => {
       question: 'q',
       fromSessionId: FROM_SESSION,
       fromProject: 'caller',
+      fromProjectId: CALLER_PROJ,
     });
 
     expect(mock.invocations[0].model).toBe('haiku');
@@ -184,6 +193,7 @@ describe('routeAsk', () => {
       question: 'literal-q',
       fromSessionId: FROM_SESSION,
       fromProject: 'caller',
+      fromProjectId: CALLER_PROJ,
       mode: 'default',
     });
     expect(mock.invocations[0].prompt).toContain('parley directive');
@@ -195,6 +205,7 @@ describe('routeAsk', () => {
       question: 'literal-q-2',
       fromSessionId: FROM_SESSION,
       fromProject: 'caller',
+      fromProjectId: CALLER_PROJ,
       mode: 'deep',
     });
     expect(mock.invocations[0].prompt).not.toContain('parley directive');
@@ -211,9 +222,10 @@ describe('routeAsk', () => {
       question: 'archive me',
       fromSessionId: FROM_SESSION,
       fromProject: 'caller',
+      fromProjectId: CALLER_PROJ,
     });
 
-    const log = await readFile(paths.logFor('peer1'), 'utf8');
+    const log = await readFile(paths.logFor(CALLER_PROJ, 'peer1'), 'utf8');
     expect(log).toContain('archive me');
     expect(log).toContain('recorded');
     expect(log).toContain('headless-fresh');
@@ -241,6 +253,7 @@ describe('routeAsk', () => {
       question: 'q',
       fromSessionId: FROM_SESSION,
       fromProject: 'caller',
+      fromProjectId: CALLER_PROJ,
       timeoutMs: 50,
     });
     await expect(ask).rejects.toThrow(/did not respond/);
@@ -269,6 +282,7 @@ describe('routeAsk', () => {
         question: 'q',
         fromSessionId: FROM_SESSION,
         fromProject: 'caller',
+        fromProjectId: CALLER_PROJ,
       }),
     ).rejects.toThrow(/2 listening sessions for "peer1".*lstn1a.*lstn1b/);
   });
@@ -297,6 +311,7 @@ describe('routeAsk', () => {
       question: 'q',
       fromSessionId: FROM_SESSION,
       fromProject: 'caller',
+      fromProjectId: CALLER_PROJ,
       timeoutMs: 50,
     });
     await expect(ask).rejects.toThrow(/did not respond/);
@@ -322,6 +337,7 @@ describe('routeAsk', () => {
         question: 'q',
         fromSessionId: FROM_SESSION,
         fromProject: 'caller',
+        fromProjectId: CALLER_PROJ,
       }),
     ).rejects.toThrow(/is not in listen mode/);
   });
@@ -335,6 +351,7 @@ describe('routeAsk', () => {
         question: 'q',
         fromSessionId: FROM_SESSION,
         fromProject: 'caller',
+        fromProjectId: CALLER_PROJ,
       }),
     ).rejects.toThrow(/no live session "ghostt"/);
   });
@@ -355,6 +372,7 @@ describe('routeAsk', () => {
         question: 'q',
         fromSessionId: FROM_SESSION,
         fromProject: 'caller',
+        fromProjectId: CALLER_PROJ,
       });
       expect(spy.mock.calls.length).toBeLessThanOrEqual(1);
     } finally {

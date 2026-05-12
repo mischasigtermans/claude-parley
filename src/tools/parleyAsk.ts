@@ -1,6 +1,7 @@
 import type { ToolDef } from './types.js';
 import { routeAsk } from '../routing/router.js';
 import { readManifest } from '../registry/sessions.js';
+import { paths } from '../registry/paths.js';
 
 export const parleyAsk: ToolDef = {
   name: 'parley_ask',
@@ -45,12 +46,14 @@ export const parleyAsk: ToolDef = {
     }
     const manifest = await readManifest(sid);
     const fromProject = manifest?.alias ?? ctx.getCurrentProjectName();
+    const fromProjectId = await paths.projectId(ctx.getCurrentProjectPath());
 
     const result = await routeAsk({
       peerRef: peer,
       question,
       fromSessionId: sid,
       fromProject,
+      fromProjectId,
       timeoutMs,
       mode,
     });

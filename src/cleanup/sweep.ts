@@ -86,19 +86,31 @@ async function sweepHeadless(
   removed: SweepRemoved,
   dryRun: boolean,
 ): Promise<void> {
-  let entries: string[];
+  let projectDirs: string[];
   try {
-    entries = await readdir(paths.headlessDir);
+    projectDirs = await readdir(paths.headlessDir);
   } catch (err) {
     if (isErrnoException(err) && err.code === 'ENOENT') return;
     throw err;
   }
-  for (const file of entries) {
-    if (!file.endsWith('.json')) continue;
-    const alias = file.slice(0, -'.json'.length);
-    if (peerAliases.has(alias)) continue;
-    if (!dryRun) await unlink(join(paths.headlessDir, file)).catch(() => {});
-    removed.headless.push(alias);
+  for (const projectId of projectDirs) {
+    const projectDir = paths.headlessProjectDir(projectId);
+    let entries: string[];
+    try {
+      const st = await stat(projectDir);
+      if (!st.isDirectory()) continue;
+      entries = await readdir(projectDir);
+    } catch (err) {
+      if (isErrnoException(err) && err.code === 'ENOENT') continue;
+      throw err;
+    }
+    for (const file of entries) {
+      if (!file.endsWith('.json')) continue;
+      const alias = file.slice(0, -'.json'.length);
+      if (peerAliases.has(alias)) continue;
+      if (!dryRun) await unlink(join(projectDir, file)).catch(() => {});
+      removed.headless.push(alias);
+    }
   }
 }
 

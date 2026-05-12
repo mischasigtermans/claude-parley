@@ -75,21 +75,32 @@ describe('sweep', () => {
     expect(result.removed.sentinels).not.toContain(`${process.pid}.session`);
   });
 
-  it('removes headless caches for aliases not in peers.json', async () => {
+  it('removes headless caches for aliases not in peers.json (across projects)', async () => {
+    const PROJ_A = 'aaaaaaaaaaaa';
+    const PROJ_B = 'bbbbbbbbbbbb';
     await writePeers({ peers: { keeper: { path: process.cwd() } } });
     await writeHeadless({
+      projectId: PROJ_A,
       alias: 'keeper',
       claudeSessionId: 'x',
-      agent: 'claude',
       cwd: process.cwd(),
       createdAt: new Date().toISOString(),
       lastUsedAt: new Date().toISOString(),
       turnCount: 1,
     });
     await writeHeadless({
+      projectId: PROJ_A,
       alias: 'orphan',
       claudeSessionId: 'y',
-      agent: 'claude',
+      cwd: '/nope',
+      createdAt: new Date().toISOString(),
+      lastUsedAt: new Date().toISOString(),
+      turnCount: 1,
+    });
+    await writeHeadless({
+      projectId: PROJ_B,
+      alias: 'orphan',
+      claudeSessionId: 'z',
       cwd: '/nope',
       createdAt: new Date().toISOString(),
       lastUsedAt: new Date().toISOString(),
@@ -98,6 +109,7 @@ describe('sweep', () => {
     const result = await sweep();
     expect(result.removed.headless).toContain('orphan');
     expect(result.removed.headless).not.toContain('keeper');
+    expect(result.removed.headless.filter((a) => a === 'orphan')).toHaveLength(2);
   });
 
   it('flags peers.json entries with missing paths as advisories without removing them', async () => {

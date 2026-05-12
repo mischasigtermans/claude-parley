@@ -1,9 +1,10 @@
 import { describe, it, beforeEach, afterEach, expect } from 'vitest';
 import { spawn, ChildProcessWithoutNullStreams } from 'node:child_process';
-import { mkdir, writeFile, readFile, access } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, access, readdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setup } from '../helpers/tmpdir.js';
+import { paths } from '../../src/registry/paths.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..', '..');
@@ -306,10 +307,15 @@ describe('MCP server harness', () => {
     expect(text).toMatch(/headless-fresh/);
     expect(text).toContain('mock-answer');
 
+    // Server picks projectId based on its parent's CWD (the test runner's).
+    // Walk headless/ to find the resulting file regardless of the hash.
+    const projectDirs = await readdir(join(t.tmp.root, 'headless'));
+    expect(projectDirs).toHaveLength(1);
     const headlessJson = JSON.parse(
-      await readFile(join(t.tmp.root, 'headless', 'peer1.json'), 'utf8'),
+      await readFile(join(t.tmp.root, 'headless', projectDirs[0], 'peer1.json'), 'utf8'),
     );
     expect(headlessJson.claudeSessionId).toBe('mock-sid');
+    expect(headlessJson.projectId).toBe(projectDirs[0]);
   });
 
   it('parley_listen flips this session to listening status', async () => {
@@ -365,7 +371,9 @@ describe('MCP server harness', () => {
   });
 
   it('parley_peers pluralizes turn counts correctly (regression)', async () => {
-    h = await startHarness({ parleyDir: t.tmp.root });
+    const mockCfg = join(t.tmp.root, 'mock.json');
+    await writeFile(mockCfg, JSON.stringify({ output: 'ack', sessionId: 'mock-sid' }));
+    h = await startHarness({ parleyDir: t.tmp.root, mockConfigPath: mockCfg });
     await h.send('tools/call', {
       name: 'parley_add',
       arguments: { alias: 'singleton', path: '/abs/singleton' },
@@ -375,32 +383,18 @@ describe('MCP server harness', () => {
       arguments: { alias: 'plural', path: '/abs/plural' },
     });
 
-    // Write headless records by hand with the desired turnCounts.
-    await mkdir(join(t.tmp.root, 'headless'), { recursive: true });
-    await writeFile(
-      join(t.tmp.root, 'headless', 'singleton.json'),
-      JSON.stringify({
-        alias: 'singleton',
-        claudeSessionId: 'a',
-        agent: 'claude',
-        cwd: '/abs/singleton',
-        createdAt: new Date().toISOString(),
-        lastUsedAt: new Date().toISOString(),
-        turnCount: 1,
-      }),
-    );
-    await writeFile(
-      join(t.tmp.root, 'headless', 'plural.json'),
-      JSON.stringify({
-        alias: 'plural',
-        claudeSessionId: 'b',
-        agent: 'claude',
-        cwd: '/abs/plural',
-        createdAt: new Date().toISOString(),
-        lastUsedAt: new Date().toISOString(),
-        turnCount: 7,
-      }),
-    );
+    // Populate turn counts via real parley_ask round-trips so the server picks
+    // its own projectId; we don't have to guess what lsof returns for the worker.
+    await h.send('tools/call', {
+      name: 'parley_ask',
+      arguments: { peer: 'singleton', question: 'q1' },
+    });
+    for (let i = 1; i <= 7; i++) {
+      await h.send('tools/call', {
+        name: 'parley_ask',
+        arguments: { peer: 'plural', question: `q${i}` },
+      });
+    }
 
     const result = await h.send('tools/call', { name: 'parley_peers', arguments: {} });
     const text = callContent(result);

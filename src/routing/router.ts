@@ -28,6 +28,7 @@ export interface AskInput {
   question: string;
   fromSessionId: string;
   fromProject: string;
+  fromProjectId: string;
   timeoutMs?: number;
   mode?: AskMode;
 }
@@ -63,7 +64,7 @@ export async function routeAsk(input: AskInput): Promise<AskResult> {
   switch (live.kind) {
     case 'single': {
       const answer = await routeLive({ ...input, target: live.session });
-      await appendTurn(peer.alias, input.fromProject, input.question, answer, 'live');
+      await appendTurn(input.fromProjectId, peer.alias, input.fromProject, input.question, answer, 'live');
       return { alias: peer.alias, tier: 'live', answer };
     }
     case 'multiple': {
@@ -96,8 +97,8 @@ export async function routeAsk(input: AskInput): Promise<AskResult> {
   const mcpServers = resolved?.resolvedMcpServers ?? {};
   const skipPermissions = resolved?.resolvedSkipPermissions ?? peer.config.skipPermissions ?? true;
 
-  return withLock(paths.headlessLockFor(peer.alias), async () => {
-    const cached = await readHeadless(peer.alias);
+  return withLock(paths.headlessLockFor(input.fromProjectId, peer.alias), async () => {
+    const cached = await readHeadless(input.fromProjectId, peer.alias);
     let tier: Tier;
     let result;
 
@@ -128,6 +129,7 @@ export async function routeAsk(input: AskInput): Promise<AskResult> {
 
     const now = new Date().toISOString();
     const next: HeadlessRecord = {
+      projectId: input.fromProjectId,
       alias: peer.alias,
       claudeSessionId: result.sessionId,
       cwd,
@@ -136,7 +138,7 @@ export async function routeAsk(input: AskInput): Promise<AskResult> {
       turnCount: (cached?.turnCount ?? 0) + 1,
     };
     await writeHeadless(next);
-    await appendTurn(peer.alias, input.fromProject, input.question, result.output, tier);
+    await appendTurn(input.fromProjectId, peer.alias, input.fromProject, input.question, result.output, tier);
     return { alias: peer.alias, tier, answer: result.output };
   });
 }
