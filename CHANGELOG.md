@@ -2,7 +2,7 @@
 
 ## [0.3.0] - 2026-05-12
 
-Per-asker-project scoping for headless peer state. Each asking project now gets its own cached Claude session, transcript log, and turn count with each peer. Cross-asker context isolation by default.
+Per-asker-project scoping for headless peer state plus a full cleanup pass. Each asking project now gets its own cached Claude session, transcript log, and turn count with each peer. Cross-asker context isolation by default. Four-persona review surfaced trivials, refactors, type-system upgrades, and two product kills that all land in this release.
 
 **Breaking**
 
@@ -12,15 +12,37 @@ Per-asker-project scoping for headless peer state. Each asking project now gets 
 - `parley_peers` History column shows turns from the calling project, not global. Visible behaviour change: users upgrading will see lower History counts. A `--global` aggregate flag may land in a later release if needed.
 - `parley_log <alias>` shows transcript from the calling project, not global.
 - `parley_reset <alias>` only clears the calling project's cached session, not other projects'.
-- `HeadlessRecord` gains `projectId: string`. Record is now self-describing.
+- `HeadlessRecord` gains `projectId: ProjectId`. Record is now self-describing.
 - `readHeadless(alias)` → `readHeadless(projectId, alias)`.
 - `clearHeadless(alias)` → `clearHeadless(projectId, alias)`.
 - `appendTurn(...)` and `readTranscript(...)` gain `projectId` as first parameter.
+- Removed `mode` parameter from `parley_ask`. The concise preamble is now always prepended on headless asks. The `mode: deep` escape hatch was speculative and rarely used.
+- Removed `defaults` block from `peers.json`. Per-peer `model`, `mcpServers`, and `skipPermissions` settings still work; the global defaults layer was never used in practice. Stray `defaults` blocks are silently ignored on read.
 
 **Added**
 
 - `paths.projectId(cwd)` (async): SHA1 of git remote URL when available, fallback to CWD. First 12 hex chars. Matches the personas plugin's algorithm so the two plugins compute identical IDs from the same CWD.
 - `paths.headlessProjectDir(projectId)` and `paths.logsProjectDir(projectId)` helpers for sweep/diagnostic tools.
+- Branded `ProjectId` type. Function signatures that took `string` for project IDs now take `ProjectId`; argument-order swaps fail to compile.
+- `ParleyContext.getProjectId()` with server-lifetime memoization. Subsequent `parley_*` calls within a session no longer fork `git config` repeatedly.
+- `isHeadlessRecord(v)` type guard. `readHeadless` returns `null` on corrupt cache files instead of feeding garbage to `--resume`.
+- `ToolDef<TArgs>` is generic. Each tool can declare a typed `parseArgs(raw)`; the dispatcher applies it before invoking `handler`. Eleven tools migrated; defensive `String(args.peer)` coercion in handlers is gone.
+
+**Changed**
+
+- `sweep` walks the new nested `headless/<projectId>/<alias>.json` layout. Empty `<projectId>/` subdirectories under `headless/` and `logs/` are pruned by a new `sweepEmptyProjectDirs` pass; `SweepRemoved.projectDirs` tracks them.
+- `sweepHeadless` reports `<projectId>/<alias>` instead of bare alias, so the same alias removed from multiple project dirs no longer collapses.
+- `router.ts` defers `resolvePeerConfig`-style work into the headless branch; the live route no longer pays the cost.
+- `queue.ts` collapses three duplicated message-read loops (`waitForMessage`, `recoverStuckInProgress`, `listInbox`) into one async generator `readMessages(dir)`.
+- `waitForMessage` and `recoverStuckInProgress` return freshly-constructed `Message` objects with the post-disk status instead of mutating the parsed object in place.
+- `parleyPeers`'s `pushRowsForPath` is hoisted to module level (it closed over nothing).
+- `parley_clean` description now accurately reflects that the auto-clean flag is invoked by the `/parley` skill, not the server.
+
+**Fixed**
+
+- Version string in `server.ts` now matches `plugin.json` (was lagging at `0.2.2`).
+- `atomicWriteJSON` no longer does a dynamic `import('node:fs/promises')` for `rename`; statically imported.
+- Magic `15` in `session-resolver.ts:findClaudePid` named as `MAX_ANCESTOR_DEPTH` with a comment explaining why.
 
 **Migration**
 
