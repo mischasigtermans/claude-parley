@@ -15678,7 +15678,8 @@ var parleyPeers = {
         description: cfg.description,
         mySid,
         skipHeadless: path === myPath,
-        fromProjectId
+        fromProjectId,
+        type: cfg.type
       });
     }
     for (const s of live) {
@@ -15721,8 +15722,11 @@ async function pushRowsForPath(opts) {
     if (nonListening.length > 0) {
       headlessNotes.push(`${nonListening.length} active window${nonListening.length === 1 ? "" : "s"}`);
     }
-    if (opts.description)
+    if (opts.type === "persona") {
+      headlessNotes.push("managed with /personas");
+    } else if (opts.description) {
       headlessNotes.push(opts.description);
+    }
     const seed = nonListening[0] ?? listening[0];
     opts.rows.push({
       peer: opts.alias,

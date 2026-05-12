@@ -55,6 +55,7 @@ export const parleyPeers: ToolDef = {
         mySid,
         skipHeadless: path === myPath,
         fromProjectId,
+        type: cfg.type,
       });
     }
 
@@ -97,6 +98,7 @@ async function pushRowsForPath(opts: {
   mySid: string | null;
   skipHeadless: boolean;
   fromProjectId: ProjectId;
+  type?: string;
 }): Promise<void> {
   const listening = opts.sessions.filter((s) => s.status === 'listening' && s.sessionId !== opts.mySid);
   const nonListening = opts.sessions.filter((s) => s.status !== 'listening' && s.sessionId !== opts.mySid);
@@ -112,7 +114,11 @@ async function pushRowsForPath(opts: {
     if (nonListening.length > 0) {
       headlessNotes.push(`${nonListening.length} active window${nonListening.length === 1 ? '' : 's'}`);
     }
-    if (opts.description) headlessNotes.push(opts.description);
+    if (opts.type === 'persona') {
+      headlessNotes.push('managed with /personas');
+    } else if (opts.description) {
+      headlessNotes.push(opts.description);
+    }
 
     const seed = nonListening[0] ?? listening[0];
     opts.rows.push({
