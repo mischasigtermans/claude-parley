@@ -7,7 +7,7 @@ const CLEAN_INTERVAL_MS = 60 * 60 * 1000;
 export const parleyClean: ToolDef = {
   name: 'parley_clean',
   description:
-    'Remove stale Parley state on this machine: dead session manifests, dangling PID sentinels, and headless caches for peers that are no longer registered. peers.json entries with missing paths are flagged but never auto-removed. Idempotent. Use dryRun to preview without modifying anything. Use auto=true to no-op when the last clean ran less than 1 hour ago (called at the top of every /parley action).',
+    "Remove stale Parley state on this machine: dead session manifests, dangling PID sentinels, and headless caches for peers that are no longer registered. peers.json entries with missing paths are flagged but never auto-removed. Idempotent. Use dryRun to preview without modifying anything. Use auto=true to no-op when state.json.lastCleanAt is younger than 1 hour (the /parley skill calls auto-clean at the top of every action via this flag).",
   inputSchema: {
     type: 'object',
     properties: {

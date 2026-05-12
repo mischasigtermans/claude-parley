@@ -19,7 +19,7 @@ async function main() {
   const ctx = makeContext();
 
   const server = new Server(
-    { name: 'parley', version: '0.2.2' },
+    { name: 'parley', version: '0.3.0' },
     { capabilities: { tools: {} } },
   );
 

@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile, unlink } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, unlink, rename } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { isErrnoException } from '../util/errors.js';
 
@@ -74,7 +74,6 @@ export async function atomicWriteJSON(path: string, data: unknown): Promise<void
   await mkdir(dirname(path), { recursive: true });
   const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
   await writeFile(tmp, JSON.stringify(data, null, 2));
-  const { rename } = await import('node:fs/promises');
   await rename(tmp, path);
 }
 

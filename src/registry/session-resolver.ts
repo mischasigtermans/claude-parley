@@ -44,9 +44,14 @@ export function parentCwd(ppid: number): string | null {
   return lines[lines.length - 1].slice(1) || null;
 }
 
+// Walk at most this many parent processes when searching for the Claude
+// process in the ancestor chain. Claude is rarely more than a few levels deep;
+// this prevents runaway walks if the chain loops or extends unexpectedly.
+const MAX_ANCESTOR_DEPTH = 15;
+
 function findClaudePid(startPid: number): number | null {
   let pid = startPid;
-  for (let i = 0; i < 15; i++) {
+  for (let i = 0; i < MAX_ANCESTOR_DEPTH; i++) {
     if (!pid || pid <= 1) return null;
     const comm = bestEffortExec('ps', ['-p', String(pid), '-o', 'comm=']);
     const leaf = comm?.trim().split('/').pop() ?? '';

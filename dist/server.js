@@ -1,4 +1,3 @@
-import { createRequire } from "node:module";
 var __create = Object.create;
 var __getProtoOf = Object.getPrototypeOf;
 var __defProp = Object.defineProperty;
@@ -43,7 +42,6 @@ var __export = (target, all) => {
       set: __exportSetter.bind(all, name)
     });
 };
-var __require = /* @__PURE__ */ createRequire(import.meta.url);
 
 // node_modules/ajv/dist/compile/codegen/code.js
 var require_code = __commonJS((exports) => {
@@ -14182,9 +14180,10 @@ function parentCwd(ppid) {
     return null;
   return lines[lines.length - 1].slice(1) || null;
 }
+var MAX_ANCESTOR_DEPTH = 15;
 function findClaudePid(startPid) {
   let pid = startPid;
-  for (let i = 0;i < 15; i++) {
+  for (let i = 0;i < MAX_ANCESTOR_DEPTH; i++) {
     if (!pid || pid <= 1)
       return null;
     const comm = bestEffortExec("ps", ["-p", String(pid), "-o", "comm="]);
@@ -14267,7 +14266,7 @@ function makeContext() {
 import { readFile as readFile2, mkdir as mkdir2 } from "node:fs/promises";
 
 // src/registry/locks.ts
-import { mkdir, readFile, writeFile, unlink } from "node:fs/promises";
+import { mkdir, readFile, writeFile, unlink, rename } from "node:fs/promises";
 import { dirname } from "node:path";
 class LockTimeoutError extends Error {
   constructor(lockPath) {
@@ -14323,7 +14322,6 @@ async function atomicWriteJSON(path, data) {
   await mkdir(dirname(path), { recursive: true });
   const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
   await writeFile(tmp, JSON.stringify(data, null, 2));
-  const { rename } = await import("node:fs/promises");
   await rename(tmp, path);
 }
 function sleep(ms) {
@@ -14564,7 +14562,7 @@ async function clearHeadless(projectId, alias) {
 }
 
 // src/drivers/claude.ts
-import { createRequire as createRequire2 } from "node:module";
+import { createRequire } from "node:module";
 import { spawn } from "node:child_process";
 var DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 var SHUTDOWN_GRACE_MS = 2000;
@@ -14607,7 +14605,7 @@ class ClaudeDriver {
     }
   }
 }
-var requireFromHere = createRequire2(import.meta.url);
+var requireFromHere = createRequire(import.meta.url);
 var resolved = null;
 var overrideTried = false;
 function loadOverride() {
@@ -14756,7 +14754,7 @@ function truncate(s, max = 500) {
 }
 
 // src/routing/queue.ts
-import { mkdir as mkdir4, readdir as readdir2, readFile as readFile5, writeFile as writeFile3, rename, access, stat, unlink as unlink3 } from "node:fs/promises";
+import { mkdir as mkdir4, readdir as readdir2, readFile as readFile5, writeFile as writeFile3, rename as rename2, access, stat, unlink as unlink3 } from "node:fs/promises";
 import { join as join2 } from "node:path";
 import { randomBytes } from "node:crypto";
 var POLL_INTERVAL_MS = 500;
@@ -14783,13 +14781,13 @@ async function sendMessage(opts) {
   const target = join2(inbox, `${id}.json`);
   const tmp = `${target}.${process.pid}.tmp`;
   await writeFile3(tmp, JSON.stringify(message, null, 2));
-  await rename(tmp, target);
+  await rename2(tmp, target);
   const outbox = paths.sessionOutbox(opts.fromSessionId);
   await mkdir4(outbox, { recursive: true });
   const outTarget = join2(outbox, `${id}.json`);
   const outTmp = `${outTarget}.${process.pid}.tmp`;
   await writeFile3(outTmp, JSON.stringify({ ...message, status: "sent" }, null, 2));
-  await rename(outTmp, outTarget);
+  await rename2(outTmp, outTarget);
   return id;
 }
 async function waitForMessage(sessionId, predicate, opts = { timeoutMs: 90000 }) {
@@ -14827,7 +14825,7 @@ async function waitForMessage(sessionId, predicate, opts = { timeoutMs: 90000 })
       await mkdir4(targetDir, { recursive: true });
       const targetPath = join2(targetDir, entry);
       try {
-        await rename(sourcePath, targetPath);
+        await rename2(sourcePath, targetPath);
       } catch (err) {
         if (isErrnoException(err) && err.code === "ENOENT")
           continue;
@@ -14836,7 +14834,7 @@ async function waitForMessage(sessionId, predicate, opts = { timeoutMs: 90000 })
       msg.status = mark;
       const tmp = `${targetPath}.${process.pid}.tmp`;
       await writeFile3(tmp, JSON.stringify(msg, null, 2));
-      await rename(tmp, targetPath);
+      await rename2(tmp, targetPath);
       return msg;
     }
     await sleep2(POLL_INTERVAL_MS);
@@ -14863,7 +14861,7 @@ async function completeInProgress(sessionId, messageId) {
   const target = join2(readDir, `${messageId}.json`);
   const tmp = `${target}.${process.pid}.tmp`;
   await writeFile3(tmp, JSON.stringify(msg, null, 2));
-  await rename(tmp, target);
+  await rename2(tmp, target);
   await unlink3(fromPath).catch(() => {});
   return true;
 }
@@ -14893,7 +14891,7 @@ async function recoverStuckInProgress(sessionId, olderThanMs) {
       const target = join2(inboxDir, entry);
       const tmp = `${target}.${process.pid}.tmp`;
       await writeFile3(tmp, JSON.stringify(msg, null, 2));
-      await rename(tmp, target);
+      await rename2(tmp, target);
       await unlink3(path).catch(() => {});
       recovered++;
     } catch {}
@@ -15319,7 +15317,7 @@ async function touchLastClean(now = new Date) {
 var CLEAN_INTERVAL_MS = 60 * 60 * 1000;
 var parleyClean = {
   name: "parley_clean",
-  description: "Remove stale Parley state on this machine: dead session manifests, dangling PID sentinels, and headless caches for peers that are no longer registered. peers.json entries with missing paths are flagged but never auto-removed. Idempotent. Use dryRun to preview without modifying anything. Use auto=true to no-op when the last clean ran less than 1 hour ago (called at the top of every /parley action).",
+  description: "Remove stale Parley state on this machine: dead session manifests, dangling PID sentinels, and headless caches for peers that are no longer registered. peers.json entries with missing paths are flagged but never auto-removed. Idempotent. Use dryRun to preview without modifying anything. Use auto=true to no-op when state.json.lastCleanAt is younger than 1 hour (the /parley skill calls auto-clean at the top of every action via this flag).",
   inputSchema: {
     type: "object",
     properties: {
@@ -15810,7 +15808,7 @@ var PRUNE_OLDER_THAN_MS = 24 * 60 * 60 * 1000;
 var RECOVER_STUCK_OLDER_THAN_MS = 10 * 60 * 1000;
 async function main() {
   const ctx = makeContext();
-  const server = new Server({ name: "parley", version: "0.2.2" }, { capabilities: { tools: {} } });
+  const server = new Server({ name: "parley", version: "0.3.0" }, { capabilities: { tools: {} } });
   const byName = new Map(tools.map((t) => [t.name, t]));
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: tools.map((t) => ({
