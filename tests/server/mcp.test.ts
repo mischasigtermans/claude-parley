@@ -172,7 +172,7 @@ describe('MCP server harness', () => {
       arguments: {},
     });
     const text = callContent(result);
-    expect(text).toMatch(/\| Peer \| Source \| Mode \| History \| Path \| Notes \|/);
+    expect(text).toMatch(/\| Peer \| Type \| Source \| Mode \| History \| Path \| Notes \|/);
     expect(text).toContain('test');
     expect(text).toMatch(/discovered/);
   });
@@ -198,7 +198,7 @@ describe('MCP server harness', () => {
       arguments: {},
     });
     const text = callContent(result);
-    expect(text).toMatch(/\| multi \| [^|]+ \| headless \|/);
+    expect(text).toMatch(/\| multi \| project \| [^|]+ \| headless \|/);
     expect(text).toContain('multi:lst001');
     expect(text).toContain('multi:lst002');
     expect(text).toMatch(/1 active window/);

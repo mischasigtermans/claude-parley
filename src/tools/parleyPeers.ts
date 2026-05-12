@@ -13,6 +13,7 @@ import { expandHome, type ProjectId } from '../registry/paths.js';
 
 interface Row {
   peer: string;
+  type: string;
   source: string;
   mode: 'headless' | 'listening';
   history: string;
@@ -23,7 +24,7 @@ interface Row {
 export const parleyPeers: ToolDef = {
   name: 'parley_peers',
   description:
-    "List all addressable peers on this machine. Call this FIRST whenever the user references another project by name (e.g. 'ask stagent about X', 'check with onoma', 'what does Y think'). Each peer gets a headless row (always reachable, alias-keyed) plus one row per /parley listen session at that path (addressable as alias:sid). Use the result to pick the right peer ref before calling parley_ask. Returns a markdown table: Peer, Source (Code / Code CLI / Cowork / '-'), Mode (headless/listening), History (turns of cached headless conversation from the calling project, or '-'), Path, Notes.",
+    "List all addressable peers on this machine. Call this FIRST whenever the user references another project by name (e.g. 'ask stagent about X', 'check with onoma', 'what does Y think'). Each peer gets a headless row (always reachable, alias-keyed) plus one row per /parley listen session at that path (addressable as alias:sid). Use the result to pick the right peer ref before calling parley_ask. Returns a markdown table: Peer, Type ('project' by default; 'persona' for entries managed by the personas plugin), Source (Code / Code CLI / Cowork / '-'), Mode (headless/listening), History (turns of cached headless conversation from the calling project, or '-'), Path, Notes.",
   inputSchema: {
     type: 'object',
     properties: {},
@@ -80,9 +81,9 @@ export const parleyPeers: ToolDef = {
       return 'No peers found. Add one with parley_add, or open another Claude Code session to discover it.';
     }
 
-    const header = '| Peer | Source | Mode | History | Path | Notes |\n|---|---|---|---|---|---|';
+    const header = '| Peer | Type | Source | Mode | History | Path | Notes |\n|---|---|---|---|---|---|---|';
     const body = rows.map(
-      (r) => `| ${r.peer} | ${r.source} | ${r.mode} | ${r.history} | \`${r.path}\` | ${r.notes.join('. ')} |`,
+      (r) => `| ${r.peer} | ${r.type} | ${r.source} | ${r.mode} | ${r.history} | \`${r.path}\` | ${r.notes.join('. ')} |`,
     );
     return [header, ...body].join('\n');
   },
@@ -123,6 +124,7 @@ async function pushRowsForPath(opts: {
     const seed = nonListening[0] ?? listening[0];
     opts.rows.push({
       peer: opts.alias,
+      type: opts.type ?? 'project',
       source: formatSource(seed?.platform, seed?.mode),
       mode: 'headless',
       history,
@@ -134,6 +136,7 @@ async function pushRowsForPath(opts: {
   for (const s of listening) {
     opts.rows.push({
       peer: `${opts.alias}:${s.sessionId}`,
+      type: opts.type ?? 'project',
       source: formatSource(s.platform, s.mode),
       mode: 'listening',
       history: '-',
