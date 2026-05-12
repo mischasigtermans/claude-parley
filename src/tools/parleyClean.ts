@@ -1,10 +1,15 @@
-import type { ToolDef } from './types.js';
+import { optionalBool, type ToolDef } from './types.js';
 import { sweep, type SweepResult } from '../cleanup/sweep.js';
 import { readState, touchLastClean } from '../registry/state.js';
 
 const CLEAN_INTERVAL_MS = 60 * 60 * 1000;
 
-export const parleyClean: ToolDef = {
+interface Args {
+  dryRun: boolean;
+  auto: boolean;
+}
+
+export const parleyClean: ToolDef<Args> = {
   name: 'parley_clean',
   description:
     "Remove stale Parley state on this machine: dead session manifests, dangling PID sentinels, and headless caches for peers that are no longer registered. peers.json entries with missing paths are flagged but never auto-removed. Idempotent. Use dryRun to preview without modifying anything. Use auto=true to no-op when state.json.lastCleanAt is younger than 1 hour (the /parley skill calls auto-clean at the top of every action via this flag).",
@@ -23,9 +28,15 @@ export const parleyClean: ToolDef = {
     },
     additionalProperties: false,
   },
+  parseArgs(raw) {
+    return {
+      dryRun: optionalBool(raw, 'dryRun') ?? false,
+      auto: optionalBool(raw, 'auto') ?? false,
+    };
+  },
   async handler(args) {
-    const dryRun = args.dryRun === true;
-    const auto = args.auto === true;
+    const dryRun = args.dryRun;
+    const auto = args.auto;
     const now = new Date();
 
     if (auto) {

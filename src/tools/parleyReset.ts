@@ -1,10 +1,13 @@
-import type { ToolDef } from './types.js';
+import { requireString, type ToolDef } from './types.js';
 import { clearHeadless } from '../registry/headless.js';
-import { paths } from '../registry/paths.js';
 
-export const parleyReset: ToolDef = {
+interface Args {
+  alias: string;
+}
+
+export const parleyReset: ToolDef<Args> = {
   name: 'parley_reset',
-  description: 'Clear the cached headless Claude session for a peer in the calling project so the next parley_ask from here spawns fresh. Use when the peer agent has gotten stuck, when you want a clean slate for a new line of questioning, or after pruning Claude Code transcripts. Only affects this project\'s cached session; other projects keep their own.',
+  description: "Clear the cached headless Claude session for a peer in the calling project so the next parley_ask from here spawns fresh. Use when the peer agent has gotten stuck, when you want a clean slate for a new line of questioning, or after pruning Claude Code transcripts. Only affects this project's cached session; other projects keep their own.",
   inputSchema: {
     type: 'object',
     properties: {
@@ -13,12 +16,14 @@ export const parleyReset: ToolDef = {
     required: ['alias'],
     additionalProperties: false,
   },
+  parseArgs(raw) {
+    return { alias: requireString('parley_reset', raw, 'alias') };
+  },
   async handler(args, ctx) {
-    const alias = String(args.alias);
-    const projectId = await paths.projectId(ctx.getCurrentProjectPath());
-    const cleared = await clearHeadless(projectId, alias);
+    const projectId = await ctx.getProjectId();
+    const cleared = await clearHeadless(projectId, args.alias);
     return cleared
-      ? `Cleared cached headless session for "${alias}" in this project. Next ask will spawn fresh.`
-      : `No cached headless session for "${alias}" in this project.`;
+      ? `Cleared cached headless session for "${args.alias}" in this project. Next ask will spawn fresh.`
+      : `No cached headless session for "${args.alias}" in this project.`;
   },
 };

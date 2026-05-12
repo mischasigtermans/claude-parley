@@ -13,7 +13,7 @@ import {
 } from '../registry/sessions.js';
 import { readHeadless, writeHeadless, HeadlessRecord } from '../registry/headless.js';
 import { withLock } from '../registry/locks.js';
-import { paths, expandHome } from '../registry/paths.js';
+import { paths, expandHome, type ProjectId } from '../registry/paths.js';
 import { getClaudeDriver } from '../drivers/claude.js';
 import { sendMessage, waitForMessage, findInboxStatus } from './queue.js';
 import { appendTurn } from './transcript.js';
@@ -28,7 +28,7 @@ export interface AskInput {
   question: string;
   fromSessionId: string;
   fromProject: string;
-  fromProjectId: string;
+  fromProjectId: ProjectId;
   timeoutMs?: number;
   mode?: AskMode;
 }

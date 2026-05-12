@@ -1,7 +1,14 @@
-import type { ToolDef } from './types.js';
+import { optionalBool, optionalString, requireString, type ToolDef } from './types.js';
 import { upsertPeer, assertValidAlias } from '../registry/peers.js';
 
-export const parleyAdd: ToolDef = {
+interface Args {
+  alias: string;
+  path: string;
+  description?: string;
+  skipPermissions: boolean;
+}
+
+export const parleyAdd: ToolDef<Args> = {
   name: 'parley_add',
   description:
     'Add or update a peer in ~/.claude/parley/peers.json. Once added, the peer is reachable by alias from any Claude Code session. Pass `description` only when the user explicitly provides one. It is an optional note that helps disambiguate natural-language references; do not invent it.',
@@ -20,20 +27,21 @@ export const parleyAdd: ToolDef = {
     required: ['alias', 'path'],
     additionalProperties: false,
   },
+  parseArgs(raw) {
+    return {
+      alias: requireString('parley_add', raw, 'alias'),
+      path: requireString('parley_add', raw, 'path'),
+      description: optionalString(raw, 'description')?.trim() || undefined,
+      skipPermissions: optionalBool(raw, 'skipPermissions') ?? true,
+    };
+  },
   async handler(args) {
-    const alias = String(args.alias);
-    const path = String(args.path);
-    const description = typeof args.description === 'string' ? args.description.trim() : '';
-    const skipPermissions = typeof args.skipPermissions === 'boolean' ? args.skipPermissions : true;
-
-    assertValidAlias(alias);
-
-    const saved = await upsertPeer(alias, {
-      path,
-      description: description || undefined,
-      skipPermissions,
+    assertValidAlias(args.alias);
+    const saved = await upsertPeer(args.alias, {
+      path: args.path,
+      description: args.description,
+      skipPermissions: args.skipPermissions,
     });
-
-    return `Added peer "${alias}" → ${saved.path}`;
+    return `Added peer "${args.alias}" → ${saved.path}`;
   },
 };

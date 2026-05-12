@@ -1,7 +1,11 @@
-import type { ToolDef } from './types.js';
+import { optionalNumber, type ToolDef } from './types.js';
 import { waitForMessage } from '../routing/queue.js';
 
-export const parleyReceiveNext: ToolDef = {
+interface Args {
+  timeoutMs: number;
+}
+
+export const parleyReceiveNext: ToolDef<Args> = {
   name: 'parley_receive_next',
   description: 'BLOCKING: wait for the next pending message in this session\'s inbox and return it. Used inside the /parley listen loop. Marks the message as read once consumed. Returns a structured message header plus the question content.',
   inputSchema: {
@@ -14,10 +18,13 @@ export const parleyReceiveNext: ToolDef = {
     },
     additionalProperties: false,
   },
+  parseArgs(raw) {
+    return { timeoutMs: optionalNumber(raw, 'timeoutMs') ?? 600_000 };
+  },
   async handler(args, ctx) {
     const sid = ctx.getCurrentSessionId();
     if (!sid) throw new Error('parley: no current session registered.');
-    const timeoutMs = typeof args.timeoutMs === 'number' ? args.timeoutMs : 600_000;
+    const timeoutMs = args.timeoutMs;
 
     const msg = await waitForMessage(sid, () => true, { timeoutMs, mark: 'in-progress' });
     if (!msg) {

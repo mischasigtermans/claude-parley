@@ -1,9 +1,19 @@
-import type { ToolDef } from './types.js';
-import { routeAsk } from '../routing/router.js';
+import {
+  optionalNumber,
+  requireString,
+  type ToolDef,
+} from './types.js';
+import { routeAsk, type AskMode } from '../routing/router.js';
 import { readManifest } from '../registry/sessions.js';
-import { paths } from '../registry/paths.js';
 
-export const parleyAsk: ToolDef = {
+interface Args {
+  peer: string;
+  question: string;
+  mode: AskMode;
+  timeoutMs?: number;
+}
+
+export const parleyAsk: ToolDef<Args> = {
   name: 'parley_ask',
   description:
     "Send a question to another project's Claude agent and return its answer. The peer is identified by alias (preferred, see parley_peers), by absolute path, or by alias:sid to target a specific listening session. Routing is automatic: live if exactly one /parley listen session matches, otherwise headless (resumed if a cached session exists, fresh otherwise). With 2+ listening sessions and no :sid, parley returns an error listing the available sids so you can retry with the explicit suffix. Headless agents run in the peer's project directory with full CLAUDE.md, skills, and tools loaded. The peer's response is appended to a transcript log readable via parley_log.",
@@ -32,12 +42,16 @@ export const parleyAsk: ToolDef = {
     required: ['peer', 'question'],
     additionalProperties: false,
   },
+  parseArgs(raw) {
+    const rawMode = raw.mode;
+    return {
+      peer: requireString('parley_ask', raw, 'peer'),
+      question: requireString('parley_ask', raw, 'question'),
+      mode: rawMode === 'deep' ? 'deep' : 'default',
+      timeoutMs: optionalNumber(raw, 'timeoutMs'),
+    };
+  },
   async handler(args, ctx) {
-    const peer = String(args.peer);
-    const question = String(args.question);
-    const mode = args.mode === 'deep' ? 'deep' : 'default';
-    const timeoutMs = typeof args.timeoutMs === 'number' ? args.timeoutMs : undefined;
-
     const sid = ctx.getCurrentSessionId();
     if (!sid) {
       throw new Error(
@@ -46,18 +60,18 @@ export const parleyAsk: ToolDef = {
     }
     const manifest = await readManifest(sid);
     const fromProject = manifest?.alias ?? ctx.getCurrentProjectName();
-    const fromProjectId = await paths.projectId(ctx.getCurrentProjectPath());
+    const fromProjectId = await ctx.getProjectId();
 
     const result = await routeAsk({
-      peerRef: peer,
-      question,
+      peerRef: args.peer,
+      question: args.question,
       fromSessionId: sid,
       fromProject,
       fromProjectId,
-      timeoutMs,
-      mode,
+      timeoutMs: args.timeoutMs,
+      mode: args.mode,
     });
 
-    return `[${result.alias} via ${result.tier}${mode === 'deep' ? ' · deep' : ''}]\n\n${result.answer}`;
+    return `[${result.alias} via ${result.tier}${args.mode === 'deep' ? ' · deep' : ''}]\n\n${result.answer}`;
   },
 };

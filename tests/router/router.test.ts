@@ -6,11 +6,12 @@ import { writeHeadless, readHeadless } from '../../src/registry/headless.js';
 import { paths } from '../../src/registry/paths.js';
 import { routeAsk } from '../../src/routing/router.js';
 import { _setClaudeDriverForTesting } from '../../src/drivers/claude.js';
+import type { ProjectId } from '../../src/registry/paths.js';
 import { createMockDriver } from '../helpers/mock-driver.js';
 import { setup } from '../helpers/tmpdir.js';
 
 const FROM_SESSION = 'caller';
-const CALLER_PROJ = 'caller000000';
+const CALLER_PROJ = 'caller000000' as ProjectId;
 
 async function registerCaller() {
   await writeManifest({

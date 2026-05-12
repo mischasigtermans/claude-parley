@@ -5,9 +5,10 @@ import {
   clearHeadless,
   HeadlessRecord,
 } from '../../src/registry/headless.js';
+import type { ProjectId } from '../../src/registry/paths.js';
 import { setup } from '../helpers/tmpdir.js';
 
-const PROJ = 'proj1234abcd';
+const PROJ = 'proj1234abcd' as ProjectId;
 
 function recordFor(overrides: Partial<HeadlessRecord> = {}): HeadlessRecord {
   return {
@@ -52,8 +53,8 @@ describe('headless cache', () => {
   });
 
   it('keeps separate records per project for the same alias', async () => {
-    const PROJ_A = 'aaaaaaaaaaaa';
-    const PROJ_B = 'bbbbbbbbbbbb';
+    const PROJ_A = 'aaaaaaaaaaaa' as ProjectId;
+    const PROJ_B = 'bbbbbbbbbbbb' as ProjectId;
     await writeHeadless(recordFor({ projectId: PROJ_A, claudeSessionId: 'sa' }));
     await writeHeadless(recordFor({ projectId: PROJ_B, claudeSessionId: 'sb' }));
     expect((await readHeadless(PROJ_A, 'lawyer'))?.claudeSessionId).toBe('sa');
@@ -61,8 +62,8 @@ describe('headless cache', () => {
   });
 
   it('clearHeadless only affects the matching project', async () => {
-    const PROJ_A = 'aaaaaaaaaaaa';
-    const PROJ_B = 'bbbbbbbbbbbb';
+    const PROJ_A = 'aaaaaaaaaaaa' as ProjectId;
+    const PROJ_B = 'bbbbbbbbbbbb' as ProjectId;
     await writeHeadless(recordFor({ projectId: PROJ_A }));
     await writeHeadless(recordFor({ projectId: PROJ_B }));
     expect(await clearHeadless(PROJ_A, 'lawyer')).toBe(true);

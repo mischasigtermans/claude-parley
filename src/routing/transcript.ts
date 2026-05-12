@@ -1,9 +1,9 @@
 import { appendFile, mkdir, readFile } from 'node:fs/promises';
-import { paths } from '../registry/paths.js';
+import { paths, type ProjectId } from '../registry/paths.js';
 import { isErrnoException } from '../util/errors.js';
 
 export async function appendTurn(
-  projectId: string,
+  projectId: ProjectId,
   alias: string,
   fromProject: string,
   question: string,
@@ -20,7 +20,7 @@ export async function appendTurn(
 }
 
 export async function readTranscript(
-  projectId: string,
+  projectId: ProjectId,
   alias: string,
   tail: number,
 ): Promise<string> {

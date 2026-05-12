@@ -14236,6 +14236,7 @@ function makeContext() {
   const pluginRoot = process.env.PARLEY_PLUGIN_ROOT ?? "";
   const cwd = process.cwd();
   let cached2 = null;
+  let projectIdCache = null;
   function resolve2() {
     if (cached2 && existsSync2(paths.sessionManifest(cached2.sid)))
       return cached2;
@@ -14258,8 +14259,40 @@ function makeContext() {
     getCurrentProjectPath: projectPath,
     getCurrentProjectName() {
       return projectPath().split("/").pop() || "unknown";
+    },
+    getProjectId() {
+      if (!projectIdCache) {
+        projectIdCache = paths.projectId(projectPath());
+      }
+      return projectIdCache;
     }
   };
+}
+
+// src/tools/types.ts
+class InvalidToolArgsError extends Error {
+  constructor(toolName, detail) {
+    super(`parley: ${toolName} received invalid arguments: ${detail}`);
+  }
+}
+function requireString(toolName, raw, key) {
+  const v = raw[key];
+  if (typeof v !== "string" || v.length === 0) {
+    throw new InvalidToolArgsError(toolName, `\`${key}\` must be a non-empty string`);
+  }
+  return v;
+}
+function optionalString(raw, key) {
+  const v = raw[key];
+  return typeof v === "string" && v.length > 0 ? v : undefined;
+}
+function optionalNumber(raw, key) {
+  const v = raw[key];
+  return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+}
+function optionalBool(raw, key) {
+  const v = raw[key];
+  return typeof v === "boolean" ? v : undefined;
 }
 
 // src/registry/peers.ts
@@ -14426,18 +14459,22 @@ var parleyAdd = {
     required: ["alias", "path"],
     additionalProperties: false
   },
+  parseArgs(raw) {
+    return {
+      alias: requireString("parley_add", raw, "alias"),
+      path: requireString("parley_add", raw, "path"),
+      description: optionalString(raw, "description")?.trim() || undefined,
+      skipPermissions: optionalBool(raw, "skipPermissions") ?? true
+    };
+  },
   async handler(args) {
-    const alias = String(args.alias);
-    const path = String(args.path);
-    const description = typeof args.description === "string" ? args.description.trim() : "";
-    const skipPermissions = typeof args.skipPermissions === "boolean" ? args.skipPermissions : true;
-    assertValidAlias(alias);
-    const saved = await upsertPeer(alias, {
-      path,
-      description: description || undefined,
-      skipPermissions
+    assertValidAlias(args.alias);
+    const saved = await upsertPeer(args.alias, {
+      path: args.path,
+      description: args.description,
+      skipPermissions: args.skipPermissions
     });
-    return `Added peer "${alias}" → ${saved.path}`;
+    return `Added peer "${args.alias}" → ${saved.path}`;
   }
 };
 
@@ -14537,10 +14574,17 @@ async function findListeningByPath(projectPath) {
 
 // src/registry/headless.ts
 import { readFile as readFile4, unlink as unlink2 } from "node:fs/promises";
+function isHeadlessRecord(v) {
+  if (typeof v !== "object" || v === null)
+    return false;
+  const r = v;
+  return typeof r.projectId === "string" && typeof r.alias === "string" && typeof r.claudeSessionId === "string" && typeof r.cwd === "string" && typeof r.createdAt === "string" && typeof r.lastUsedAt === "string" && typeof r.turnCount === "number";
+}
 async function readHeadless(projectId, alias) {
   try {
     const raw = await readFile4(paths.headlessFor(projectId, alias), "utf8");
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw);
+    return isHeadlessRecord(parsed) ? parsed : null;
   } catch (err) {
     if (isErrnoException(err) && err.code === "ENOENT")
       return null;
@@ -15134,28 +15178,33 @@ var parleyAsk = {
     required: ["peer", "question"],
     additionalProperties: false
   },
+  parseArgs(raw) {
+    const rawMode = raw.mode;
+    return {
+      peer: requireString("parley_ask", raw, "peer"),
+      question: requireString("parley_ask", raw, "question"),
+      mode: rawMode === "deep" ? "deep" : "default",
+      timeoutMs: optionalNumber(raw, "timeoutMs")
+    };
+  },
   async handler(args, ctx) {
-    const peer = String(args.peer);
-    const question = String(args.question);
-    const mode = args.mode === "deep" ? "deep" : "default";
-    const timeoutMs = typeof args.timeoutMs === "number" ? args.timeoutMs : undefined;
     const sid = ctx.getCurrentSessionId();
     if (!sid) {
       throw new Error("parley: this session is not registered. Restart Claude Code so the SessionStart hook can fire.");
     }
     const manifest = await readManifest(sid);
     const fromProject = manifest?.alias ?? ctx.getCurrentProjectName();
-    const fromProjectId = await paths.projectId(ctx.getCurrentProjectPath());
+    const fromProjectId = await ctx.getProjectId();
     const result = await routeAsk({
-      peerRef: peer,
-      question,
+      peerRef: args.peer,
+      question: args.question,
       fromSessionId: sid,
       fromProject,
       fromProjectId,
-      timeoutMs,
-      mode
+      timeoutMs: args.timeoutMs,
+      mode: args.mode
     });
-    return `[${result.alias} via ${result.tier}${mode === "deep" ? " · deep" : ""}]
+    return `[${result.alias} via ${result.tier}${args.mode === "deep" ? " · deep" : ""}]
 
 ${result.answer}`;
   }
@@ -15362,9 +15411,15 @@ var parleyClean = {
     },
     additionalProperties: false
   },
+  parseArgs(raw) {
+    return {
+      dryRun: optionalBool(raw, "dryRun") ?? false,
+      auto: optionalBool(raw, "auto") ?? false
+    };
+  },
   async handler(args) {
-    const dryRun = args.dryRun === true;
-    const auto = args.auto === true;
+    const dryRun = args.dryRun;
+    const auto = args.auto;
     const now = new Date;
     if (auto) {
       const state = await readState();
@@ -15539,8 +15594,12 @@ var parleyDiscover = {
     },
     additionalProperties: false
   },
+  parseArgs(raw) {
+    const n = optionalNumber(raw, "limit");
+    return { limit: n !== undefined && n > 0 ? n : 20 };
+  },
   async handler(args) {
-    const limit = typeof args.limit === "number" && args.limit > 0 ? args.limit : 20;
+    const limit = args.limit;
     const peers = await readPeers();
     const registered = new Set(Object.values(peers.peers).map((p) => expandHome(p.path)));
     const all = await discoverProjects();
@@ -15595,12 +15654,16 @@ var parleyLog = {
     required: ["alias"],
     additionalProperties: false
   },
+  parseArgs(raw) {
+    return {
+      alias: requireString("parley_log", raw, "alias"),
+      tail: optionalNumber(raw, "tail") ?? 20
+    };
+  },
   async handler(args, ctx) {
-    const alias = String(args.alias);
-    const tail = typeof args.tail === "number" ? args.tail : 20;
-    const fromProjectId = await paths.projectId(ctx.getCurrentProjectPath());
-    const content = await readTranscript(fromProjectId, alias, tail);
-    return content || `No transcript yet for "${alias}" from this project.`;
+    const fromProjectId = await ctx.getProjectId();
+    const content = await readTranscript(fromProjectId, args.alias, args.tail);
+    return content || `No transcript yet for "${args.alias}" from this project.`;
   }
 };
 
@@ -15620,7 +15683,7 @@ var parleyPeers = {
     const myManifest = sid ? await readManifest(sid) : null;
     const mySid = myManifest?.sessionId ?? sid;
     const myPath = myManifest?.projectPath ?? ctx.getCurrentProjectPath();
-    const fromProjectId = await paths.projectId(ctx.getCurrentProjectPath());
+    const fromProjectId = await ctx.getProjectId();
     const rows = [];
     const seenPaths = new Set;
     for (const [alias, cfg] of Object.entries(peersFile.peers)) {
@@ -15726,11 +15789,14 @@ var parleyReceiveNext = {
     },
     additionalProperties: false
   },
+  parseArgs(raw) {
+    return { timeoutMs: optionalNumber(raw, "timeoutMs") ?? 600000 };
+  },
   async handler(args, ctx) {
     const sid = ctx.getCurrentSessionId();
     if (!sid)
       throw new Error("parley: no current session registered.");
-    const timeoutMs = typeof args.timeoutMs === "number" ? args.timeoutMs : 600000;
+    const timeoutMs = args.timeoutMs;
     const msg = await waitForMessage(sid, () => true, { timeoutMs, mark: "in-progress" });
     if (!msg) {
       return "TIMEOUT. No message arrived. The listen loop should call this tool again.";
@@ -15761,10 +15827,12 @@ var parleyRemove = {
     required: ["alias"],
     additionalProperties: false
   },
+  parseArgs(raw) {
+    return { alias: requireString("parley_remove", raw, "alias") };
+  },
   async handler(args) {
-    const alias = String(args.alias);
-    const removed = await removePeer(alias);
-    return removed ? `Removed peer "${alias}".` : `No peer named "${alias}" was configured.`;
+    const removed = await removePeer(args.alias);
+    return removed ? `Removed peer "${args.alias}".` : `No peer named "${args.alias}" was configured.`;
   }
 };
 
@@ -15780,11 +15848,13 @@ var parleyReset = {
     required: ["alias"],
     additionalProperties: false
   },
+  parseArgs(raw) {
+    return { alias: requireString("parley_reset", raw, "alias") };
+  },
   async handler(args, ctx) {
-    const alias = String(args.alias);
-    const projectId = await paths.projectId(ctx.getCurrentProjectPath());
-    const cleared = await clearHeadless(projectId, alias);
-    return cleared ? `Cleared cached headless session for "${alias}" in this project. Next ask will spawn fresh.` : `No cached headless session for "${alias}" in this project.`;
+    const projectId = await ctx.getProjectId();
+    const cleared = await clearHeadless(projectId, args.alias);
+    return cleared ? `Cleared cached headless session for "${args.alias}" in this project. Next ask will spawn fresh.` : `No cached headless session for "${args.alias}" in this project.`;
   }
 };
 
@@ -15802,22 +15872,28 @@ var parleyRespond = {
     required: ["toSessionId", "inReplyTo", "content"],
     additionalProperties: false
   },
+  parseArgs(raw) {
+    return {
+      toSessionId: requireString("parley_respond", raw, "toSessionId"),
+      inReplyTo: requireString("parley_respond", raw, "inReplyTo"),
+      content: requireString("parley_respond", raw, "content")
+    };
+  },
   async handler(args, ctx) {
     const sid = ctx.getCurrentSessionId();
     if (!sid)
       throw new Error("parley: no current session registered.");
     const manifest = await readManifest(sid);
     const fromProject = manifest?.alias ?? ctx.getCurrentProjectName();
-    const inReplyTo = String(args.inReplyTo);
     const id = await sendMessage({
       fromSessionId: sid,
       fromProject,
-      toSessionId: String(args.toSessionId),
+      toSessionId: args.toSessionId,
       type: "response",
-      content: String(args.content),
-      inReplyTo
+      content: args.content,
+      inReplyTo: args.inReplyTo
     });
-    await completeInProgress(sid, inReplyTo);
+    await completeInProgress(sid, args.inReplyTo);
     return `Sent response ${id} to ${args.toSessionId}.`;
   }
 };
@@ -15858,7 +15934,9 @@ async function main() {
       throw new Error(`parley: unknown tool "${request.params.name}"`);
     }
     try {
-      const text = await tool.handler(request.params.arguments ?? {}, ctx);
+      const raw = request.params.arguments ?? {};
+      const typed = tool.parseArgs ? tool.parseArgs(raw) : raw;
+      const text = await tool.handler(typed, ctx);
       return { content: [{ type: "text", text }] };
     } catch (err) {
       return {

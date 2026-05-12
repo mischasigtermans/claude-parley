@@ -11,7 +11,12 @@ import { parleyRemove } from './parleyRemove.js';
 import { parleyReset } from './parleyReset.js';
 import { parleyRespond } from './parleyRespond.js';
 
-export const tools: ToolDef[] = [
+// Array stores tools with erased args type. Each tool's parseArgs+handler
+// pair is internally consistent; the dispatcher in server.ts calls parseArgs
+// before handler so erasure here doesn't lose safety at the call boundary.
+export type AnyToolDef = ToolDef<any>;
+
+export const tools: AnyToolDef[] = [
   parleyAdd,
   parleyAsk,
   parleyClean,

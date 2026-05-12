@@ -10,6 +10,13 @@ function parleyDir(): string {
   return process.env.PARLEY_DIR ?? join(homedir(), '.claude', 'parley');
 }
 
+/**
+ * Branded type for project identity hashes. Prevents argument-order swaps
+ * (e.g. `paths.headlessFor(alias, projectId)`) at compile time since plain
+ * strings can't be passed where a ProjectId is required.
+ */
+export type ProjectId = string & { readonly _brand: 'ProjectId' };
+
 async function gitRemote(cwd: string): Promise<string | null> {
   try {
     const { stdout } = await exec('git', ['config', '--get', 'remote.origin.url'], { cwd });
@@ -37,23 +44,23 @@ export const paths = {
     join(parleyDir(), 'sessions', sid, 'inbox', 'in-progress'),
   sessionInboxRead: (sid: string) => join(parleyDir(), 'sessions', sid, 'inbox', 'read'),
   sessionOutbox: (sid: string) => join(parleyDir(), 'sessions', sid, 'outbox'),
-  headlessProjectDir: (projectId: string) => join(parleyDir(), 'headless', projectId),
-  headlessFor: (projectId: string, alias: string) =>
+  headlessProjectDir: (projectId: ProjectId) => join(parleyDir(), 'headless', projectId),
+  headlessFor: (projectId: ProjectId, alias: string) =>
     join(parleyDir(), 'headless', projectId, `${alias}.json`),
-  headlessLockFor: (projectId: string, alias: string) =>
+  headlessLockFor: (projectId: ProjectId, alias: string) =>
     join(parleyDir(), 'locks', `${projectId}-${alias}.lock`),
-  logsProjectDir: (projectId: string) => join(parleyDir(), 'logs', projectId),
-  logFor: (projectId: string, alias: string) =>
+  logsProjectDir: (projectId: ProjectId) => join(parleyDir(), 'logs', projectId),
+  logFor: (projectId: ProjectId, alias: string) =>
     join(parleyDir(), 'logs', projectId, `${alias}.md`),
   /**
    * Compute the project_id for a CWD. Matches the personas plugin algorithm:
    * SHA1 of git remote URL when available, fallback to SHA1 of CWD. First 12 hex chars.
    * Replicating identically lets parley and personas agree on what a 'project' is.
    */
-  async projectId(cwd: string): Promise<string> {
+  async projectId(cwd: string): Promise<ProjectId> {
     const remote = await gitRemote(cwd);
     const source = remote ?? cwd;
-    return createHash('sha1').update(source).digest('hex').slice(0, 12);
+    return createHash('sha1').update(source).digest('hex').slice(0, 12) as ProjectId;
   },
 } as const;
 

@@ -39,7 +39,9 @@ async function main() {
       throw new Error(`parley: unknown tool "${request.params.name}"`);
     }
     try {
-      const text = await tool.handler(request.params.arguments ?? {}, ctx);
+      const raw = request.params.arguments ?? {};
+      const typed = tool.parseArgs ? tool.parseArgs(raw) : raw;
+      const text = await tool.handler(typed, ctx);
       return { content: [{ type: 'text', text }] };
     } catch (err) {
       return {

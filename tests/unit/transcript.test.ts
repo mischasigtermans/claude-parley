@@ -1,5 +1,6 @@
 import { describe, it, beforeEach, afterEach, expect } from 'vitest';
 import { appendTurn, readTranscript } from '../../src/routing/transcript.js';
+import type { ProjectId } from '../../src/registry/paths.js';
 import { setup } from '../helpers/tmpdir.js';
 
 describe('transcript', () => {
@@ -7,7 +8,7 @@ describe('transcript', () => {
   beforeEach(t.before);
   afterEach(t.after);
 
-  const PROJ = 'proj1234abcd';
+  const PROJ = 'proj1234abcd' as ProjectId;
 
   it('returns empty string when no transcript exists', async () => {
     expect(await readTranscript(PROJ, 'lawyer', 0)).toBe('');
@@ -42,8 +43,8 @@ describe('transcript', () => {
   });
 
   it('transcripts are isolated per project', async () => {
-    const PROJ_A = 'aaaaaaaaaaaa';
-    const PROJ_B = 'bbbbbbbbbbbb';
+    const PROJ_A = 'aaaaaaaaaaaa' as ProjectId;
+    const PROJ_B = 'bbbbbbbbbbbb' as ProjectId;
     await appendTurn(PROJ_A, 'lawyer', 'cowork', 'a-question', 'a-answer', 'live');
     await appendTurn(PROJ_B, 'lawyer', 'cowork', 'b-question', 'b-answer', 'live');
 

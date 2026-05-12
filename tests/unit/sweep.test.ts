@@ -5,7 +5,7 @@ import { sweep } from '../../src/cleanup/sweep.js';
 import { writeManifest, readManifest, type SessionManifest } from '../../src/registry/sessions.js';
 import { writeHeadless } from '../../src/registry/headless.js';
 import { writePeers } from '../../src/registry/peers.js';
-import { paths } from '../../src/registry/paths.js';
+import { paths, type ProjectId } from '../../src/registry/paths.js';
 import { setup } from '../helpers/tmpdir.js';
 
 function manifest(overrides: Partial<SessionManifest> = {}): SessionManifest {
@@ -76,8 +76,8 @@ describe('sweep', () => {
   });
 
   it('removes headless caches for aliases not in peers.json (across projects)', async () => {
-    const PROJ_A = 'aaaaaaaaaaaa';
-    const PROJ_B = 'bbbbbbbbbbbb';
+    const PROJ_A = 'aaaaaaaaaaaa' as ProjectId;
+    const PROJ_B = 'bbbbbbbbbbbb' as ProjectId;
     await writePeers({ peers: { keeper: { path: process.cwd() } } });
     await writeHeadless({
       projectId: PROJ_A,
@@ -145,7 +145,7 @@ describe('sweep', () => {
   });
 
   it('reports removed headless as projectId/alias for cross-project precision', async () => {
-    const PROJ_A = 'aaaaaaaaaaaa';
+    const PROJ_A = 'aaaaaaaaaaaa' as ProjectId;
     await writePeers({ peers: { keeper: { path: process.cwd() } } });
     await writeHeadless({
       projectId: PROJ_A,
@@ -161,7 +161,7 @@ describe('sweep', () => {
   });
 
   it('removes empty project subdirectories under headless/ and logs/', async () => {
-    const PROJ = 'aaaaaaaaaaaa';
+    const PROJ = 'aaaaaaaaaaaa' as ProjectId;
     await mkdir(join(t.tmp.root, 'headless', PROJ), { recursive: true });
     await mkdir(join(t.tmp.root, 'logs', PROJ), { recursive: true });
     const result = await sweep();

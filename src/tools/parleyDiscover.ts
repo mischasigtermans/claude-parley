@@ -1,9 +1,13 @@
-import type { ToolDef } from './types.js';
+import { optionalNumber, type ToolDef } from './types.js';
 import { discoverProjects, relativeAge } from '../discovery/projects.js';
 import { readPeers } from '../registry/peers.js';
 import { expandHome } from '../registry/paths.js';
 
-export const parleyDiscover: ToolDef = {
+interface Args {
+  limit: number;
+}
+
+export const parleyDiscover: ToolDef<Args> = {
   name: 'parley_discover',
   description:
     "Scan ~/.claude/projects/ for project directories where the user has recently used Claude Code. Returns candidates that aren't yet registered as peers, sorted by last-used time. Useful for onboarding: pick which to add with parley_add. Does not register anything itself.",
@@ -17,8 +21,12 @@ export const parleyDiscover: ToolDef = {
     },
     additionalProperties: false,
   },
+  parseArgs(raw) {
+    const n = optionalNumber(raw, 'limit');
+    return { limit: n !== undefined && n > 0 ? n : 20 };
+  },
   async handler(args) {
-    const limit = typeof args.limit === 'number' && args.limit > 0 ? args.limit : 20;
+    const limit = args.limit;
     const peers = await readPeers();
     const registered = new Set(
       Object.values(peers.peers).map((p) => expandHome(p.path)),

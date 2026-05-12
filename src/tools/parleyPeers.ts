@@ -9,7 +9,7 @@ import {
   SessionManifest,
 } from '../registry/sessions.js';
 import { readHeadless } from '../registry/headless.js';
-import { expandHome, paths } from '../registry/paths.js';
+import { expandHome, type ProjectId } from '../registry/paths.js';
 
 interface Row {
   peer: string;
@@ -36,7 +36,7 @@ export const parleyPeers: ToolDef = {
     const myManifest = sid ? await readManifest(sid) : null;
     const mySid = myManifest?.sessionId ?? sid;
     const myPath = myManifest?.projectPath ?? ctx.getCurrentProjectPath();
-    const fromProjectId = await paths.projectId(ctx.getCurrentProjectPath());
+    const fromProjectId = await ctx.getProjectId();
 
     const rows: Row[] = [];
     const seenPaths = new Set<string>();
@@ -96,7 +96,7 @@ async function pushRowsForPath(opts: {
   description?: string;
   mySid: string | null;
   skipHeadless: boolean;
-  fromProjectId: string;
+  fromProjectId: ProjectId;
 }): Promise<void> {
   const listening = opts.sessions.filter((s) => s.status === 'listening' && s.sessionId !== opts.mySid);
   const nonListening = opts.sessions.filter((s) => s.status !== 'listening' && s.sessionId !== opts.mySid);
