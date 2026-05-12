@@ -11,6 +11,7 @@ export interface SweepRemoved {
   sessions: string[];
   sentinels: string[];
   headless: string[];
+  projectDirs: string[];
 }
 
 export interface SweepResult {
@@ -23,7 +24,12 @@ export async function sweep(
   opts: { dryRun?: boolean } = {},
 ): Promise<SweepResult> {
   const dryRun = opts.dryRun === true;
-  const removed: SweepRemoved = { sessions: [], sentinels: [], headless: [] };
+  const removed: SweepRemoved = {
+    sessions: [],
+    sentinels: [],
+    headless: [],
+    projectDirs: [],
+  };
   const advisories: string[] = [];
 
   const peersFile = await readPeers();
@@ -32,6 +38,7 @@ export async function sweep(
   await sweepSessions(removed, dryRun);
   await sweepSentinels(removed, dryRun);
   await sweepHeadless(peerAliases, removed, dryRun);
+  await sweepEmptyProjectDirs(removed, dryRun);
   await collectAdvisories(peersFile.peers, advisories);
 
   return { removed, advisories, dryRun };
@@ -109,7 +116,42 @@ async function sweepHeadless(
       const alias = file.slice(0, -'.json'.length);
       if (peerAliases.has(alias)) continue;
       if (!dryRun) await unlink(join(projectDir, file)).catch(() => {});
-      removed.headless.push(alias);
+      removed.headless.push(`${projectId}/${alias}`);
+    }
+  }
+}
+
+/**
+ * Remove empty `<projectId>/` subdirectories under `headless/` and `logs/`.
+ * Runs after sweepHeadless so any directory left empty by alias pruning gets
+ * collected. Treats non-directories at the top level as orphans from the
+ * pre-v0.3.0 flat layout and leaves them alone.
+ */
+async function sweepEmptyProjectDirs(
+  removed: SweepRemoved,
+  dryRun: boolean,
+): Promise<void> {
+  for (const root of [paths.headlessDir, paths.logsDir]) {
+    let entries: string[];
+    try {
+      entries = await readdir(root);
+    } catch (err) {
+      if (isErrnoException(err) && err.code === 'ENOENT') continue;
+      throw err;
+    }
+    for (const name of entries) {
+      const dir = join(root, name);
+      try {
+        const st = await stat(dir);
+        if (!st.isDirectory()) continue;
+        const contents = await readdir(dir);
+        if (contents.length > 0) continue;
+        if (!dryRun) await rm(dir, { recursive: true, force: true });
+        removed.projectDirs.push(`${root.endsWith('/headless') ? 'headless' : 'logs'}/${name}`);
+      } catch (err) {
+        if (isErrnoException(err) && err.code === 'ENOENT') continue;
+        throw err;
+      }
     }
   }
 }

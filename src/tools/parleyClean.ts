@@ -53,7 +53,8 @@ function countRemoved(result: SweepResult): number {
   return (
     result.removed.sessions.length +
     result.removed.sentinels.length +
-    result.removed.headless.length
+    result.removed.headless.length +
+    result.removed.projectDirs.length
   );
 }
 
@@ -74,6 +75,10 @@ function formatReport(result: SweepResult, totalRemoved: number, now: Date): str
     if (result.removed.headless.length > 0) {
       lines.push(`  • ${result.removed.headless.length} headless cache(s) for removed peers`);
       for (const a of result.removed.headless) lines.push(`      ${a}`);
+    }
+    if (result.removed.projectDirs.length > 0) {
+      lines.push(`  • ${result.removed.projectDirs.length} empty project director(ies)`);
+      for (const d of result.removed.projectDirs) lines.push(`      ${d}`);
     }
   }
 

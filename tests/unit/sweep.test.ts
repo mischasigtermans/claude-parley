@@ -107,9 +107,10 @@ describe('sweep', () => {
       turnCount: 1,
     });
     const result = await sweep();
-    expect(result.removed.headless).toContain('orphan');
-    expect(result.removed.headless).not.toContain('keeper');
-    expect(result.removed.headless.filter((a) => a === 'orphan')).toHaveLength(2);
+    expect(result.removed.headless).toContain(`${PROJ_A}/orphan`);
+    expect(result.removed.headless).toContain(`${PROJ_B}/orphan`);
+    expect(result.removed.headless).not.toContain(`${PROJ_A}/keeper`);
+    expect(result.removed.headless).not.toContain(`${PROJ_B}/keeper`);
   });
 
   it('flags peers.json entries with missing paths as advisories without removing them', async () => {
@@ -140,6 +141,32 @@ describe('sweep', () => {
     expect(second.removed.sessions).toEqual([]);
     expect(second.removed.sentinels).toEqual([]);
     expect(second.removed.headless).toEqual([]);
+    expect(second.removed.projectDirs).toEqual([]);
+  });
+
+  it('reports removed headless as projectId/alias for cross-project precision', async () => {
+    const PROJ_A = 'aaaaaaaaaaaa';
+    await writePeers({ peers: { keeper: { path: process.cwd() } } });
+    await writeHeadless({
+      projectId: PROJ_A,
+      alias: 'gone',
+      claudeSessionId: 'x',
+      cwd: '/nope',
+      createdAt: new Date().toISOString(),
+      lastUsedAt: new Date().toISOString(),
+      turnCount: 1,
+    });
+    const result = await sweep();
+    expect(result.removed.headless).toContain(`${PROJ_A}/gone`);
+  });
+
+  it('removes empty project subdirectories under headless/ and logs/', async () => {
+    const PROJ = 'aaaaaaaaaaaa';
+    await mkdir(join(t.tmp.root, 'headless', PROJ), { recursive: true });
+    await mkdir(join(t.tmp.root, 'logs', PROJ), { recursive: true });
+    const result = await sweep();
+    expect(result.removed.projectDirs).toContain(`headless/${PROJ}`);
+    expect(result.removed.projectDirs).toContain(`logs/${PROJ}`);
   });
 
 });

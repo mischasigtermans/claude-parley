@@ -15173,13 +15173,19 @@ import { join as join3 } from "node:path";
 var HEARTBEAT_DEAD_MS = 60 * 60 * 1000;
 async function sweep(opts = {}) {
   const dryRun = opts.dryRun === true;
-  const removed = { sessions: [], sentinels: [], headless: [] };
+  const removed = {
+    sessions: [],
+    sentinels: [],
+    headless: [],
+    projectDirs: []
+  };
   const advisories = [];
   const peersFile = await readPeers();
   const peerAliases = new Set(Object.keys(peersFile.peers));
   await sweepSessions(removed, dryRun);
   await sweepSentinels(removed, dryRun);
   await sweepHeadless(peerAliases, removed, dryRun);
+  await sweepEmptyProjectDirs(removed, dryRun);
   await collectAdvisories(peersFile.peers, advisories);
   return { removed, advisories, dryRun };
 }
@@ -15262,7 +15268,37 @@ async function sweepHeadless(peerAliases, removed, dryRun) {
         continue;
       if (!dryRun)
         await unlink4(join3(projectDir, file)).catch(() => {});
-      removed.headless.push(alias);
+      removed.headless.push(`${projectId}/${alias}`);
+    }
+  }
+}
+async function sweepEmptyProjectDirs(removed, dryRun) {
+  for (const root of [paths.headlessDir, paths.logsDir]) {
+    let entries;
+    try {
+      entries = await readdir3(root);
+    } catch (err) {
+      if (isErrnoException(err) && err.code === "ENOENT")
+        continue;
+      throw err;
+    }
+    for (const name of entries) {
+      const dir = join3(root, name);
+      try {
+        const st = await stat2(dir);
+        if (!st.isDirectory())
+          continue;
+        const contents = await readdir3(dir);
+        if (contents.length > 0)
+          continue;
+        if (!dryRun)
+          await rm(dir, { recursive: true, force: true });
+        removed.projectDirs.push(`${root.endsWith("/headless") ? "headless" : "logs"}/${name}`);
+      } catch (err) {
+        if (isErrnoException(err) && err.code === "ENOENT")
+          continue;
+        throw err;
+      }
     }
   }
 }
@@ -15355,7 +15391,7 @@ var parleyClean = {
   }
 };
 function countRemoved(result) {
-  return result.removed.sessions.length + result.removed.sentinels.length + result.removed.headless.length;
+  return result.removed.sessions.length + result.removed.sentinels.length + result.removed.headless.length + result.removed.projectDirs.length;
 }
 function formatReport(result, totalRemoved, now) {
   const lines = [];
@@ -15374,6 +15410,11 @@ function formatReport(result, totalRemoved, now) {
       lines.push(`  • ${result.removed.headless.length} headless cache(s) for removed peers`);
       for (const a of result.removed.headless)
         lines.push(`      ${a}`);
+    }
+    if (result.removed.projectDirs.length > 0) {
+      lines.push(`  • ${result.removed.projectDirs.length} empty project director(ies)`);
+      for (const d of result.removed.projectDirs)
+        lines.push(`      ${d}`);
     }
   }
   if (result.advisories.length > 0) {
