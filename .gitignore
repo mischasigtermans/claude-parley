@@ -3,5 +3,7 @@
 /.idea/
 /.vscode/
 /research/
+/.in_use/
+/.orphaned_at
 .DS_Store
 *.log

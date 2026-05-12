@@ -50,6 +50,22 @@ describe('peers registry', () => {
     expect(await findPeer('nope')).toBeNull();
   });
 
+  it('upsertPeer preserves type on round-trip', async () => {
+    await upsertPeer('steve-jobs', {
+      path: '/abs/steve',
+      model: 'opus',
+      type: 'persona',
+    });
+    const file = await readPeers();
+    expect(file.peers['steve-jobs'].type).toBe('persona');
+  });
+
+  it('upsertPeer leaves type undefined when not provided', async () => {
+    await upsertPeer('lawyer', { path: '/abs/lawyer' });
+    const file = await readPeers();
+    expect(file.peers.lawyer.type).toBeUndefined();
+  });
+
   it('readPeers ignores a stray top-level `defaults` block (back-compat)', async () => {
     await mkdir(paths.root, { recursive: true });
     await writeFile(

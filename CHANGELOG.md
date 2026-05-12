@@ -27,6 +27,7 @@ Per-asker-project scoping for headless peer state plus a full cleanup pass. Each
 - `ParleyContext.getProjectId()` with server-lifetime memoization. Subsequent `parley_*` calls within a session no longer fork `git config` repeatedly.
 - `isHeadlessRecord(v)` type guard. `readHeadless` returns `null` on corrupt cache files instead of feeding garbage to `--resume`.
 - `ToolDef<TArgs>` is generic. Each tool can declare a typed `parseArgs(raw)`; the dispatcher applies it before invoking `handler`. Eleven tools migrated; defensive `String(args.peer)` coercion in handlers is gone.
+- `PeerConfig.type?: string` field. Optional type classification (e.g. `"persona"`). Cooperating plugins set this to mark what a peer represents; user-managed entries leave it absent. Parley passes it through `upsertPeer`'s normaliser unchanged; it doesn't act on the value.
 
 **Changed**
 

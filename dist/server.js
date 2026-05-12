@@ -14400,7 +14400,8 @@ async function upsertPeer(alias, config2) {
       description: config2.description,
       model: config2.model,
       mcpServers: config2.mcpServers,
-      skipPermissions: config2.skipPermissions ?? true
+      skipPermissions: config2.skipPermissions ?? true,
+      type: config2.type
     };
     file.peers[alias] = normalized;
     await writePeers(file);
