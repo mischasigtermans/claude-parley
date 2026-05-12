@@ -3,7 +3,6 @@ import {
   PeerConfig,
   PeersFile,
   readPeers,
-  resolvePeerConfigFromFile,
 } from '../registry/peers.js';
 import {
   findListeningByPath,
@@ -21,8 +20,6 @@ import { errorMessage } from '../util/errors.js';
 
 export type Tier = 'live' | 'headless-resumed' | 'headless-fresh';
 
-export type AskMode = 'default' | 'deep';
-
 export interface AskInput {
   peerRef: string;
   question: string;
@@ -30,7 +27,6 @@ export interface AskInput {
   fromProject: string;
   fromProjectId: ProjectId;
   timeoutMs?: number;
-  mode?: AskMode;
 }
 
 export interface AskResult {
@@ -89,13 +85,11 @@ export async function routeAsk(input: AskInput): Promise<AskResult> {
   const cwd = expandHome(peer.config.path);
   const driver = getClaudeDriver();
 
-  const mode: AskMode = input.mode ?? 'default';
-  const wrappedPrompt = mode === 'deep' ? input.question : CONCISE_PREAMBLE + input.question;
+  const wrappedPrompt = CONCISE_PREAMBLE + input.question;
 
-  const resolved = resolvePeerConfigFromFile(peer.alias, peersFile);
-  const model = resolved?.resolvedModel ?? peersFile.defaults?.model;
-  const mcpServers = resolved?.resolvedMcpServers ?? {};
-  const skipPermissions = resolved?.resolvedSkipPermissions ?? peer.config.skipPermissions ?? true;
+  const model = peer.config.model;
+  const mcpServers = peer.config.mcpServers ?? {};
+  const skipPermissions = peer.config.skipPermissions ?? true;
 
   return withLock(paths.headlessLockFor(input.fromProjectId, peer.alias), async () => {
     const cached = await readHeadless(input.fromProjectId, peer.alias);

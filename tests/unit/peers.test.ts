@@ -6,7 +6,6 @@ import {
   upsertPeer,
   removePeer,
   findPeer,
-  resolvePeerConfigFromFile,
   assertValidAlias,
   InvalidAliasError,
 } from '../../src/registry/peers.js';
@@ -51,48 +50,18 @@ describe('peers registry', () => {
     expect(await findPeer('nope')).toBeNull();
   });
 
-  it('resolvePeerConfigFromFile inherits from defaults', async () => {
-    await mkdir(paths.root, { recursive: true });
-    await writeFile(
-      paths.peersFile,
-      JSON.stringify({
-        defaults: { model: 'sonnet', mcpServers: {}, skipPermissions: false },
-        peers: {
-          lawyer: { path: '/abs/lawyer', agent: 'claude' },
-        },
-      }),
-    );
-    const resolved = resolvePeerConfigFromFile('lawyer', await readPeers());
-    expect(resolved).not.toBeNull();
-    expect(resolved!.resolvedModel).toBe('sonnet');
-    expect(resolved!.resolvedMcpServers).toEqual({});
-    expect(resolved!.resolvedSkipPermissions).toBe(false);
-  });
-
-  it('resolvePeerConfigFromFile prefers per-peer overrides over defaults', async () => {
+  it('readPeers ignores a stray top-level `defaults` block (back-compat)', async () => {
     await mkdir(paths.root, { recursive: true });
     await writeFile(
       paths.peersFile,
       JSON.stringify({
         defaults: { model: 'sonnet' },
-        peers: {
-          lawyer: { path: '/abs/lawyer', agent: 'claude', model: 'opus' },
-        },
+        peers: { lawyer: { path: '/abs/lawyer' } },
       }),
     );
-    const resolved = resolvePeerConfigFromFile('lawyer', await readPeers());
-    expect(resolved!.resolvedModel).toBe('opus');
-  });
-
-  it('writePeers preserves the defaults section', async () => {
-    await writePeers({
-      defaults: { model: 'haiku' },
-      peers: { foo: { path: '/abs/foo', agent: 'claude' } },
-    });
-    const raw = await readFile(paths.peersFile, 'utf8');
-    const parsed = JSON.parse(raw);
-    expect(parsed.defaults.model).toBe('haiku');
-    expect(parsed.peers.foo).toBeDefined();
+    const file = await readPeers();
+    expect(file).not.toHaveProperty('defaults');
+    expect(file.peers.lawyer.path).toBe('/abs/lawyer');
   });
 });
 

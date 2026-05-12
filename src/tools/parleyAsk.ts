@@ -1,22 +1,17 @@
-import {
-  optionalNumber,
-  requireString,
-  type ToolDef,
-} from './types.js';
-import { routeAsk, type AskMode } from '../routing/router.js';
+import { optionalNumber, requireString, type ToolDef } from './types.js';
+import { routeAsk } from '../routing/router.js';
 import { readManifest } from '../registry/sessions.js';
 
 interface Args {
   peer: string;
   question: string;
-  mode: AskMode;
   timeoutMs?: number;
 }
 
 export const parleyAsk: ToolDef<Args> = {
   name: 'parley_ask',
   description:
-    "Send a question to another project's Claude agent and return its answer. The peer is identified by alias (preferred, see parley_peers), by absolute path, or by alias:sid to target a specific listening session. Routing is automatic: live if exactly one /parley listen session matches, otherwise headless (resumed if a cached session exists, fresh otherwise). With 2+ listening sessions and no :sid, parley returns an error listing the available sids so you can retry with the explicit suffix. Headless agents run in the peer's project directory with full CLAUDE.md, skills, and tools loaded. The peer's response is appended to a transcript log readable via parley_log.",
+    "Send a question to another project's Claude agent and return its answer. The peer is identified by alias (preferred, see parley_peers), by absolute path, or by alias:sid to target a specific listening session. Routing is automatic: live if exactly one /parley listen session matches, otherwise headless (resumed if a cached session exists, fresh otherwise). With 2+ listening sessions and no :sid, parley returns an error listing the available sids so you can retry with the explicit suffix. Headless agents run in the peer's project directory with full CLAUDE.md, skills, and tools loaded. A concise directive is always prepended to keep the peer focused. The peer's response is appended to a transcript log readable via parley_log.",
   inputSchema: {
     type: 'object',
     properties: {
@@ -28,12 +23,6 @@ export const parleyAsk: ToolDef<Args> = {
         type: 'string',
         description: 'The full question or instruction for the peer agent. Be specific. The peer is a separate session and only sees this prompt.',
       },
-      mode: {
-        type: 'string',
-        enum: ['default', 'deep'],
-        description:
-          '"default" (recommended): parley auto-prepends a concise directive so the peer answers fast and focused. "deep": no directive, pass through verbatim, peer is free to explore extensively. Use "deep" when you genuinely want the peer to investigate, not just answer a question.',
-      },
       timeoutMs: {
         type: 'number',
         description: 'Optional. Max time to wait for the peer to respond. Default 300000 (5 min).',
@@ -43,11 +32,9 @@ export const parleyAsk: ToolDef<Args> = {
     additionalProperties: false,
   },
   parseArgs(raw) {
-    const rawMode = raw.mode;
     return {
       peer: requireString('parley_ask', raw, 'peer'),
       question: requireString('parley_ask', raw, 'question'),
-      mode: rawMode === 'deep' ? 'deep' : 'default',
       timeoutMs: optionalNumber(raw, 'timeoutMs'),
     };
   },
@@ -69,9 +56,8 @@ export const parleyAsk: ToolDef<Args> = {
       fromProject,
       fromProjectId,
       timeoutMs: args.timeoutMs,
-      mode: args.mode,
     });
 
-    return `[${result.alias} via ${result.tier}${args.mode === 'deep' ? ' · deep' : ''}]\n\n${result.answer}`;
+    return `[${result.alias} via ${result.tier}]\n\n${result.answer}`;
   },
 };

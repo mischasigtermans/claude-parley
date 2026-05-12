@@ -19,21 +19,8 @@ export interface PeerConfig {
   skipPermissions?: boolean;
 }
 
-export interface PeersDefaults {
-  model?: string;
-  mcpServers?: Record<string, McpServerConfig>;
-  skipPermissions?: boolean;
-}
-
 export interface PeersFile {
-  defaults?: PeersDefaults;
   peers: Record<string, PeerConfig>;
-}
-
-export interface ResolvedPeerConfig extends PeerConfig {
-  resolvedModel?: string;
-  resolvedMcpServers: Record<string, McpServerConfig>;
-  resolvedSkipPermissions: boolean;
 }
 
 const empty: PeersFile = { peers: {} };
@@ -57,8 +44,8 @@ export function assertValidAlias(alias: string): void {
 export async function readPeers(): Promise<PeersFile> {
   try {
     const raw = await readFile(paths.peersFile, 'utf8');
-    const parsed = JSON.parse(raw) as PeersFile;
-    return { defaults: parsed.defaults, peers: parsed.peers ?? {} };
+    const parsed = JSON.parse(raw) as { peers?: Record<string, PeerConfig> };
+    return { peers: parsed.peers ?? {} };
   } catch (err) {
     if (isErrnoException(err) && err.code === 'ENOENT') {
       return { ...empty, peers: { ...empty.peers } };
@@ -118,17 +105,3 @@ export function findPeerInFile(
   return null;
 }
 
-export function resolvePeerConfigFromFile(
-  alias: string,
-  file: PeersFile,
-): ResolvedPeerConfig | null {
-  const peer = file.peers[alias];
-  if (!peer) return null;
-  const defaults = file.defaults ?? {};
-  return {
-    ...peer,
-    resolvedModel: peer.model ?? defaults.model,
-    resolvedMcpServers: peer.mcpServers ?? defaults.mcpServers ?? {},
-    resolvedSkipPermissions: peer.skipPermissions ?? defaults.skipPermissions ?? true,
-  };
-}

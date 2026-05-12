@@ -142,7 +142,6 @@ describe('routeAsk', () => {
     const mock = createMockDriver();
     _setClaudeDriverForTesting(mock);
     await writePeers({
-      defaults: { model: 'sonnet', mcpServers: {} },
       peers: {
         peer1: {
           path: '/abs/peer1',
@@ -164,27 +163,7 @@ describe('routeAsk', () => {
     expect(mock.invocations[0].mcpServers).toEqual({ Linear: { command: 'foo' } });
   });
 
-  it('inherits model and mcpServers from defaults when peer omits them', async () => {
-    const mock = createMockDriver();
-    _setClaudeDriverForTesting(mock);
-    await writePeers({
-      defaults: { model: 'haiku', mcpServers: { foo: { command: 'bar' } } },
-      peers: { peer1: { path: '/abs/peer1' } },
-    });
-
-    await routeAsk({
-      peerRef: 'peer1',
-      question: 'q',
-      fromSessionId: FROM_SESSION,
-      fromProject: 'caller',
-      fromProjectId: CALLER_PROJ,
-    });
-
-    expect(mock.invocations[0].model).toBe('haiku');
-    expect(mock.invocations[0].mcpServers).toEqual({ foo: { command: 'bar' } });
-  });
-
-  it('default mode wraps the prompt with the concise directive; deep mode does not', async () => {
+  it('always prepends the concise directive to the prompt', async () => {
     const mock = createMockDriver();
     _setClaudeDriverForTesting(mock);
     await writePeers({ peers: { peer1: { path: '/abs/peer1' } } });
@@ -195,22 +174,9 @@ describe('routeAsk', () => {
       fromSessionId: FROM_SESSION,
       fromProject: 'caller',
       fromProjectId: CALLER_PROJ,
-      mode: 'default',
     });
     expect(mock.invocations[0].prompt).toContain('parley directive');
     expect(mock.invocations[0].prompt).toContain('literal-q');
-
-    mock.reset();
-    await routeAsk({
-      peerRef: 'peer1',
-      question: 'literal-q-2',
-      fromSessionId: FROM_SESSION,
-      fromProject: 'caller',
-      fromProjectId: CALLER_PROJ,
-      mode: 'deep',
-    });
-    expect(mock.invocations[0].prompt).not.toContain('parley directive');
-    expect(mock.invocations[0].prompt).toBe('literal-q-2');
   });
 
   it('appends the turn to the transcript after a successful spawn', async () => {
@@ -361,7 +327,6 @@ describe('routeAsk', () => {
     const mock = createMockDriver();
     _setClaudeDriverForTesting(mock);
     await writePeers({
-      defaults: { model: 'sonnet' },
       peers: { peer1: { path: '/abs/peer1' } },
     });
 

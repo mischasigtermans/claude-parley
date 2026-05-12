@@ -14379,7 +14379,7 @@ async function readPeers() {
   try {
     const raw = await readFile2(paths.peersFile, "utf8");
     const parsed = JSON.parse(raw);
-    return { defaults: parsed.defaults, peers: parsed.peers ?? {} };
+    return { peers: parsed.peers ?? {} };
   } catch (err) {
     if (isErrnoException(err) && err.code === "ENOENT") {
       return { ...empty, peers: { ...empty.peers } };
@@ -14427,18 +14427,6 @@ function findPeerInFile(aliasOrPath, file) {
       return { alias, config: cfg };
   }
   return null;
-}
-function resolvePeerConfigFromFile(alias, file) {
-  const peer = file.peers[alias];
-  if (!peer)
-    return null;
-  const defaults = file.defaults ?? {};
-  return {
-    ...peer,
-    resolvedModel: peer.model ?? defaults.model,
-    resolvedMcpServers: peer.mcpServers ?? defaults.mcpServers ?? {},
-    resolvedSkipPermissions: peer.skipPermissions ?? defaults.skipPermissions ?? true
-  };
 }
 
 // src/tools/parleyAdd.ts
@@ -15044,12 +15032,10 @@ async function routeAsk(input) {
   }
   const cwd = expandHome(peer.config.path);
   const driver = getClaudeDriver();
-  const mode = input.mode ?? "default";
-  const wrappedPrompt = mode === "deep" ? input.question : CONCISE_PREAMBLE + input.question;
-  const resolved2 = resolvePeerConfigFromFile(peer.alias, peersFile);
-  const model = resolved2?.resolvedModel ?? peersFile.defaults?.model;
-  const mcpServers = resolved2?.resolvedMcpServers ?? {};
-  const skipPermissions = resolved2?.resolvedSkipPermissions ?? peer.config.skipPermissions ?? true;
+  const wrappedPrompt = CONCISE_PREAMBLE + input.question;
+  const model = peer.config.model;
+  const mcpServers = peer.config.mcpServers ?? {};
+  const skipPermissions = peer.config.skipPermissions ?? true;
   return withLock(paths.headlessLockFor(input.fromProjectId, peer.alias), async () => {
     const cached2 = await readHeadless(input.fromProjectId, peer.alias);
     let tier;
@@ -15153,7 +15139,7 @@ async function routeLive(opts) {
 // src/tools/parleyAsk.ts
 var parleyAsk = {
   name: "parley_ask",
-  description: "Send a question to another project's Claude agent and return its answer. The peer is identified by alias (preferred, see parley_peers), by absolute path, or by alias:sid to target a specific listening session. Routing is automatic: live if exactly one /parley listen session matches, otherwise headless (resumed if a cached session exists, fresh otherwise). With 2+ listening sessions and no :sid, parley returns an error listing the available sids so you can retry with the explicit suffix. Headless agents run in the peer's project directory with full CLAUDE.md, skills, and tools loaded. The peer's response is appended to a transcript log readable via parley_log.",
+  description: "Send a question to another project's Claude agent and return its answer. The peer is identified by alias (preferred, see parley_peers), by absolute path, or by alias:sid to target a specific listening session. Routing is automatic: live if exactly one /parley listen session matches, otherwise headless (resumed if a cached session exists, fresh otherwise). With 2+ listening sessions and no :sid, parley returns an error listing the available sids so you can retry with the explicit suffix. Headless agents run in the peer's project directory with full CLAUDE.md, skills, and tools loaded. A concise directive is always prepended to keep the peer focused. The peer's response is appended to a transcript log readable via parley_log.",
   inputSchema: {
     type: "object",
     properties: {
@@ -15165,11 +15151,6 @@ var parleyAsk = {
         type: "string",
         description: "The full question or instruction for the peer agent. Be specific. The peer is a separate session and only sees this prompt."
       },
-      mode: {
-        type: "string",
-        enum: ["default", "deep"],
-        description: '"default" (recommended): parley auto-prepends a concise directive so the peer answers fast and focused. "deep": no directive, pass through verbatim, peer is free to explore extensively. Use "deep" when you genuinely want the peer to investigate, not just answer a question.'
-      },
       timeoutMs: {
         type: "number",
         description: "Optional. Max time to wait for the peer to respond. Default 300000 (5 min)."
@@ -15179,11 +15160,9 @@ var parleyAsk = {
     additionalProperties: false
   },
   parseArgs(raw) {
-    const rawMode = raw.mode;
     return {
       peer: requireString("parley_ask", raw, "peer"),
       question: requireString("parley_ask", raw, "question"),
-      mode: rawMode === "deep" ? "deep" : "default",
       timeoutMs: optionalNumber(raw, "timeoutMs")
     };
   },
@@ -15201,10 +15180,9 @@ var parleyAsk = {
       fromSessionId: sid,
       fromProject,
       fromProjectId,
-      timeoutMs: args.timeoutMs,
-      mode: args.mode
+      timeoutMs: args.timeoutMs
     });
-    return `[${result.alias} via ${result.tier}${args.mode === "deep" ? " · deep" : ""}]
+    return `[${result.alias} via ${result.tier}]
 
 ${result.answer}`;
   }
