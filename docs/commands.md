@@ -27,7 +27,7 @@ These are reachable from any other MCP-capable client (Claude Desktop, Cursor) b
 
 ## How the skill routes
 
-The `parley` skill picks up both slash commands and natural-language triggers ('ask onoma about X'). It calls the relevant MCP tool, formats the result, and decides whether to continue listening or close out. The slash commands are explicit operational entry points; the awareness handles conversational cases.
+The `parley` skill picks up both slash commands and natural-language triggers ('ask onoma about X'). It calls the relevant MCP tool, formats the result, and decides whether to continue listening or close out. The slash commands are explicit operational entry points; the skill handles conversational cases.
 
 ## Multi-session disambiguation
 

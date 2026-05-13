@@ -62,13 +62,12 @@ Then ensure the project has a `.claude/settings.local.json` allowlist covering w
 
 ## Cleanup
 
-Parley accumulates state per session. When Claude Code crashes, gets killed, or you reboot, sessions can leave behind stale manifests. The discovery menu (`/parley` with no argument) auto-runs cleanup once every 7 days, so you rarely invoke it directly. To clean on demand: `/parley clean`, or `/parley clean --dry-run` to preview.
+Parley accumulates state per session. When Claude Code crashes, gets killed, or you reboot, sessions can leave behind stale manifests. The `parley` skill calls `parley_clean({auto: true})` at the top of every action. The server enforces a 1-hour cooldown so most invocations no-op. To clean on demand: `/parley clean`, or `/parley clean --dry-run` to preview.
 
 What gets removed:
 
 - Session manifests whose owning process is dead AND last heartbeat was more than 1 hour ago.
 - `by-claude-pid/` sentinels for processes that no longer exist.
-- `.claude/parley-session` pointers in projects whose target session has been cleaned up.
 - Headless caches for peers no longer in `peers.json`.
 
 What's flagged but never auto-removed:

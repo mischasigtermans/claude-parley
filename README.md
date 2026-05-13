@@ -78,7 +78,7 @@ See [CHANGELOG.md](CHANGELOG.md).
 
 ## Credits
 
-- [Mischa Sigtermans](https://github.com/mischasigtermans)
+- [Mischa Sigtermans](https://mischa.sigtermans.me)
 - Inspired by Shreyas Patil's [`session-bridge`](https://github.com/shreyaspatil/session-bridge) for the live-session routing pattern.
 
 ## License
