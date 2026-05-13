@@ -1,7 +1,7 @@
 # Claude Parley
 
-[![Version](https://img.shields.io/github/v/release/mischasigtermans/parley?label=version)](https://github.com/mischasigtermans/claude-parley/releases)
-[![License](https://img.shields.io/github/license/mischasigtermans/parley)](LICENSE)
+[![Version](https://img.shields.io/badge/dynamic/json?url=https://raw.githubusercontent.com/mischasigtermans/claude-parley/main/.claude-plugin/plugin.json&query=$.version&label=version&prefix=v)](https://github.com/mischasigtermans/claude-parley)
+[![License](https://img.shields.io/github/license/mischasigtermans/claude-parley)](LICENSE)
 
 Talk to your other Claude Code projects from any session.
 
