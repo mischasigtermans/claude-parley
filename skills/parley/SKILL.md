@@ -1,11 +1,11 @@
 ---
 name: parley
-description: Cross-session bridge between Claude Code projects. Activates when the user references another project or peer agent by name ("ask stagent", "what does onoma think") or invokes `/parley` to manage peers (list, discover, add, listen, ask, log). Drives the listen-mode receive loop when this session answers peers. All routing goes through the `parley` MCP server.
+description: Lets one Claude Code project consult another on the same machine. Activates when the user references another project or peer agent by name ('ask stagent', 'what does onoma think') or invokes `/parley` to manage peers (list, discover, add, listen, ask, log). Drives the listen-mode receive loop when this session answers peers. All routing goes through the `parley` MCP server.
 ---
 
 # Parley
 
-Cross-session bridge. Each project on this machine becomes a peer agent, addressable by short alias (e.g. `stagent`, `onoma`). Peers are real Claude Code sessions running in their own project directories with their own CLAUDE.md, skills, and tools.
+Lets one Claude Code project consult another on the same machine. Each project becomes a peer agent, addressable by short alias (e.g. `stagent`, `onoma`). Peers are real Claude Code sessions running in their own project directories with their own CLAUDE.md, skills, and tools.
 
 State and routing are owned by the `parley` MCP server. **Use the `parley_*` tools for every operation. Never `Bash` peers.json or session manifests.** If a tool seems missing, flag it. Don't fall back to bash.
 

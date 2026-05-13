@@ -1,10 +1,10 @@
 {
   "name": "parley",
-  "description": "Cross-session peer agents for Claude Code. Ask one project what another knows, with full context and memory across turns.",
   "version": "0.3.0",
-  "author": {
-    "name": "Mischa Sigtermans"
-  },
-  "repository": "https://github.com/mischasigtermans/parley",
-  "keywords": ["bridge", "multi-session", "peer-to-peer", "mcp", "multi-agent"]
+  "description": "Talk to your other Claude Code projects from any session.",
+  "author": { "name": "Mischa Sigtermans" },
+  "homepage": "https://github.com/mischasigtermans/claude-parley",
+  "repository": "https://github.com/mischasigtermans/claude-parley",
+  "license": "MIT",
+  "keywords": ["multi-session", "peer-to-peer", "mcp", "multi-agent", "headless"]
 }

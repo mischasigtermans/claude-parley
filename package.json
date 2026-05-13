@@ -1,12 +1,12 @@
 {
   "name": "parley",
   "version": "0.3.0",
-  "description": "Cross-session peer agents for Claude Code. Ask one project what another knows, with full context and memory across turns.",
+  "description": "Talk to your other Claude Code projects from any session.",
   "license": "MIT",
   "author": {
     "name": "Mischa Sigtermans"
   },
-  "repository": "https://github.com/mischasigtermans/parley",
+  "repository": "https://github.com/mischasigtermans/claude-parley",
   "type": "module",
   "scripts": {
     "build": "bun build src/server.ts --target=node --format=esm --outfile=dist/server.js",
