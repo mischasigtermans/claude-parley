@@ -12,7 +12,7 @@ When you ask a peer, Parley picks one of three routes automatically based on the
 
 ## Per-asker-project scoping
 
-Each asking project gets its own cached Claude session per peer. When you ask `stagent` from project A vs project B, they each have their own thread with stagent. Cross-asker context isolation is the default.
+Each asking project gets its own cached Claude session per peer. When you ask the same peer from project A vs project B, they each have their own thread with that peer. Cross-asker context isolation is the default.
 
 State paths reflect this:
 

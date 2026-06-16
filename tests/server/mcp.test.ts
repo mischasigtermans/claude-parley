@@ -172,7 +172,7 @@ describe('MCP server harness', () => {
       arguments: {},
     });
     const text = callContent(result);
-    expect(text).toMatch(/\| Peer \| Type \| Source \| Mode \| History \| Path \| Notes \|/);
+    expect(text).toMatch(/\| Peer \| Type \| Source \| Mode \| History \| Location \| Notes \|/);
     expect(text).toContain('test');
     expect(text).toMatch(/discovered/);
   });
@@ -256,14 +256,14 @@ describe('MCP server harness', () => {
     await expect(readFile(join(t.tmp.root, 'state.json'), 'utf8')).rejects.toThrow();
   });
 
-  it('parley_clean auto=true returns empty when last clean was recent', async () => {
+  it('parley_clean second call still reports "Already clean" (server auto-clean handles cooldown internally)', async () => {
     h = await startHarness({ parleyDir: t.tmp.root });
     await h.send('tools/call', { name: 'parley_clean', arguments: {} });
     const second = await h.send('tools/call', {
       name: 'parley_clean',
-      arguments: { auto: true },
+      arguments: {},
     });
-    expect(callContent(second)).toBe('');
+    expect(callContent(second)).toMatch(/Already clean/);
   });
 
   it('parley_add → parley_remove round-trips through peers.json', async () => {
@@ -304,7 +304,9 @@ describe('MCP server harness', () => {
       arguments: { peer: 'peer1', question: 'hi' },
     });
     const text = callContent(ask);
-    expect(text).toMatch(/headless-fresh/);
+    // v0.3.0: response prefix is just `[alias]`. Transport stays in the
+    // transcript log only.
+    expect(text).toMatch(/^\[peer1\]/);
     expect(text).toContain('mock-answer');
 
     // Server picks projectId based on its parent's CWD (the test runner's).

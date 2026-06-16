@@ -103,7 +103,7 @@ describe('withLock', () => {
     expect(Date.now() - start).toBeLessThan(1000);
   });
 
-  it('does not reclaim a lock held by our own (live) PID — same-process contention is honored', async () => {
+  it('does not reclaim a lock held by our own (live) PID: same-process contention is honored', async () => {
     const lock = join(t.tmp.root, 'self.lock');
     await mkdir(t.tmp.root, { recursive: true });
     const { writeFile } = await import('node:fs/promises');
@@ -117,7 +117,7 @@ describe('withLock', () => {
   it('does not reclaim a lock held by a live process', async () => {
     const lock = join(t.tmp.root, 'live.lock');
     await mkdir(t.tmp.root, { recursive: true });
-    // The current process is definitely alive — but using our own pid would trigger
+    // The current process is definitely alive, but using our own pid would trigger
     // self-reclaim. Use the parent process's PID, which exists for the duration of
     // this test run (vitest runner).
     const livePid = process.ppid;

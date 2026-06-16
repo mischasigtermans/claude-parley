@@ -11,6 +11,13 @@ export interface HeadlessRecord {
   createdAt: string;
   lastUsedAt: string;
   turnCount: number;
+  /**
+   * Which transport last wrote this record. The cache now doubles as a session
+   * pointer per (asker, peer): live tier writes the listener's session id;
+   * headless tier writes the spawn's session id. Either path can resume via
+   * --resume <claudeSessionId>.
+   */
+  origin?: 'live' | 'headless';
 }
 
 export function isHeadlessRecord(v: unknown): v is HeadlessRecord {

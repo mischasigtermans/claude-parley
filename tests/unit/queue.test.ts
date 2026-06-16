@@ -324,13 +324,13 @@ describe('queue / pruneRead', () => {
     await mkdir(readDir, { recursive: true });
     const { writeFile, utimes } = await import('node:fs/promises');
 
-    // Old file — set mtime 2 days back.
+    // Old file. Set mtime 2 days back.
     const oldPath = join(readDir, 'old.json');
     await writeFile(oldPath, '{}');
     const longAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
     await utimes(oldPath, longAgo, longAgo);
 
-    // Fresh file — leave mtime at now.
+    // Fresh file. Leave mtime at now.
     const freshPath = join(readDir, 'fresh.json');
     await writeFile(freshPath, '{}');
 

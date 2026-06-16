@@ -12,18 +12,24 @@ export interface ParleyTmp {
 export async function makeParleyTmp(prefix = 'parley-test-'): Promise<ParleyTmp> {
   const root = await mkdtemp(join(tmpdir(), prefix));
   const prevDir = process.env.PARLEY_DIR;
+  const prevConfig = process.env.PARLEY_CONFIG;
   let envApplied = false;
 
   return {
     root,
     setEnv() {
       process.env.PARLEY_DIR = root;
+      // Isolate tests from the user's real ~/.claude/parley/config.json so
+      // readParleyConfig() doesn't pick up live settings.
+      process.env.PARLEY_CONFIG = join(root, 'config.json');
       envApplied = true;
     },
     restoreEnv() {
       if (!envApplied) return;
       if (prevDir === undefined) delete process.env.PARLEY_DIR;
       else process.env.PARLEY_DIR = prevDir;
+      if (prevConfig === undefined) delete process.env.PARLEY_CONFIG;
+      else process.env.PARLEY_CONFIG = prevConfig;
       envApplied = false;
     },
     async cleanup() {
@@ -45,7 +51,7 @@ export function setup(prefix?: string) {
   let current: ParleyTmp | null = null;
   return {
     get tmp(): ParleyTmp {
-      if (!current) throw new Error('tmpdir not initialised — did you call before()?');
+      if (!current) throw new Error('tmpdir not initialised. Did you call before()?');
       return current;
     },
     async before() {

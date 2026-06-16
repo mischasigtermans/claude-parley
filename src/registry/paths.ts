@@ -33,6 +33,7 @@ export const paths = {
   get stateFile() { return join(parleyDir(), 'state.json'); },
   get sessionsDir() { return join(parleyDir(), 'sessions'); },
   get headlessDir() { return join(parleyDir(), 'headless'); },
+  get extensionsDir() { return join(parleyDir(), 'extensions'); },
   get logsDir() { return join(parleyDir(), 'logs'); },
   get locksDir() { return join(parleyDir(), 'locks'); },
   get byClaudePidDir() { return join(parleyDir(), 'by-claude-pid'); },
@@ -53,9 +54,9 @@ export const paths = {
   logFor: (projectId: ProjectId, alias: string) =>
     join(parleyDir(), 'logs', projectId, `${alias}.md`),
   /**
-   * Compute the project_id for a CWD. Matches the personas plugin algorithm:
-   * SHA1 of git remote URL when available, fallback to SHA1 of CWD. First 12 hex chars.
-   * Replicating identically lets parley and personas agree on what a 'project' is.
+   * Compute the project_id for a CWD. SHA1 of the git remote URL when one is
+   * available, fallback to SHA1 of the CWD path. First 12 hex chars. Stable
+   * across worktrees and clones of the same repo.
    */
   async projectId(cwd: string): Promise<ProjectId> {
     const remote = await gitRemote(cwd);

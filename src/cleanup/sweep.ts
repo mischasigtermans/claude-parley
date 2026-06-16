@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { paths, expandHome } from '../registry/paths.js';
 import { isProcessAlive, readManifest } from '../registry/sessions.js';
 import { readPeers } from '../registry/peers.js';
+import { readExtensions } from '../registry/extensions.js';
 import { isErrnoException } from '../util/errors.js';
 
 const HEARTBEAT_DEAD_MS = 60 * 60 * 1000;
@@ -12,6 +13,8 @@ export interface SweepRemoved {
   sentinels: string[];
   headless: string[];
   projectDirs: string[];
+  /** Extension manifests whose declared peer paths no longer exist. */
+  extensions: string[];
 }
 
 export interface SweepResult {
@@ -29,16 +32,25 @@ export async function sweep(
     sentinels: [],
     headless: [],
     projectDirs: [],
+    extensions: [],
   };
   const advisories: string[] = [];
 
   const peersFile = await readPeers();
-  const peerAliases = new Set(Object.keys(peersFile.peers));
+  // Protect headless caches for BOTH user-curated peers and extension-provided
+  // peers (e.g. personas). Without the extension aliases here, the sweep would
+  // delete persona caches every cycle and break their cross-turn continuity.
+  const extensions = await readExtensions();
+  const peerAliases = new Set([
+    ...Object.keys(peersFile.peers),
+    ...extensions.map((e) => e.alias),
+  ]);
 
   await sweepSessions(removed, dryRun);
   await sweepSentinels(removed, dryRun);
   await sweepHeadless(peerAliases, removed, dryRun);
   await sweepEmptyProjectDirs(removed, dryRun);
+  await sweepStaleExtensions(removed, dryRun);
   await collectAdvisories(peersFile.peers, advisories);
 
   return { removed, advisories, dryRun };
@@ -153,6 +165,49 @@ async function sweepEmptyProjectDirs(
         throw err;
       }
     }
+  }
+}
+
+/**
+ * Remove extension manifests whose declared peer paths are all gone. Tolerant
+ * of malformed JSON (skips silently) so a broken manifest doesn't poison the
+ * sweep. Partially-stale manifests (some peers ok, some gone) stay; the
+ * extension itself owns peer accuracy. Parley only removes the manifest when
+ * EVERY peer's path is missing on disk.
+ */
+async function sweepStaleExtensions(
+  removed: SweepRemoved,
+  dryRun: boolean,
+): Promise<void> {
+  let entries: string[];
+  try {
+    entries = await readdir(paths.extensionsDir);
+  } catch (err) {
+    if (isErrnoException(err) && err.code === 'ENOENT') return;
+    throw err;
+  }
+  for (const file of entries) {
+    if (!file.endsWith('.json')) continue;
+    const manifestPath = join(paths.extensionsDir, file);
+    let manifest: { peers?: unknown };
+    try {
+      const raw = await import('node:fs/promises').then((m) => m.readFile(manifestPath, 'utf8'));
+      manifest = JSON.parse(raw);
+    } catch {
+      continue;
+    }
+    if (!Array.isArray(manifest.peers) || manifest.peers.length === 0) continue;
+    let anyAlive = false;
+    for (const p of manifest.peers as Array<{ path?: unknown }>) {
+      if (typeof p?.path !== 'string') continue;
+      if (await pathExists(expandHome(p.path))) {
+        anyAlive = true;
+        break;
+      }
+    }
+    if (anyAlive) continue;
+    if (!dryRun) await unlink(manifestPath).catch(() => {});
+    removed.extensions.push(file);
   }
 }
 

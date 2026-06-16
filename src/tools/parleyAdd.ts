@@ -5,7 +5,7 @@ interface Args {
   alias: string;
   path: string;
   description?: string;
-  skipPermissions: boolean;
+  skipPermissions?: boolean;
 }
 
 export const parleyAdd: ToolDef<Args> = {
@@ -15,14 +15,14 @@ export const parleyAdd: ToolDef<Args> = {
   inputSchema: {
     type: 'object',
     properties: {
-      alias: { type: 'string', description: 'Short name to address the peer by (e.g. "stagent").' },
+      alias: { type: 'string', description: 'Short name to address the peer by. Typically the directory basename.' },
       path: { type: 'string', description: 'Absolute or ~-prefixed project path.' },
       description: {
         type: 'string',
         description:
-          'OPTIONAL. Free-text hint provided by the user to help match natural-language references (e.g. "the legal project", "the booking app"). Leave empty if the user did not specify one. Do not fabricate.',
+          'OPTIONAL. Free-text hint provided by the user to help match natural-language references (e.g. "the backend api", "the marketing site"). Leave empty if the user did not specify one. Do not fabricate.',
       },
-      skipPermissions: { type: 'boolean', description: 'Pass --dangerously-skip-permissions to headless spawns. Default true.' },
+      skipPermissions: { type: 'boolean', description: 'Pass --dangerously-skip-permissions on headless spawns. Default unset, in which case [permissions] skip_default from config.json applies (default true).' },
     },
     required: ['alias', 'path'],
     additionalProperties: false,
@@ -32,7 +32,7 @@ export const parleyAdd: ToolDef<Args> = {
       alias: requireString('parley_add', raw, 'alias'),
       path: requireString('parley_add', raw, 'path'),
       description: optionalString(raw, 'description')?.trim() || undefined,
-      skipPermissions: optionalBool(raw, 'skipPermissions') ?? true,
+      skipPermissions: optionalBool(raw, 'skipPermissions'),
     };
   },
   async handler(args) {

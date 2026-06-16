@@ -113,6 +113,29 @@ describe('sweep', () => {
     expect(result.removed.headless).not.toContain(`${PROJ_B}/keeper`);
   });
 
+  it('keeps headless caches for extension-provided peers (e.g. personas)', async () => {
+    const PROJ = 'cccccccccccc' as ProjectId;
+    await mkdir(paths.extensionsDir, { recursive: true });
+    await writeFile(
+      join(paths.extensionsDir, 'personas.json'),
+      JSON.stringify({
+        name: 'personas',
+        peers: [{ alias: 'steve-jobs', path: process.cwd() }],
+      }),
+    );
+    await writeHeadless({
+      projectId: PROJ,
+      alias: 'steve-jobs',
+      claudeSessionId: 'x',
+      cwd: process.cwd(),
+      createdAt: new Date().toISOString(),
+      lastUsedAt: new Date().toISOString(),
+      turnCount: 2,
+    });
+    const result = await sweep();
+    expect(result.removed.headless).not.toContain(`${PROJ}/steve-jobs`);
+  });
+
   it('flags peers.json entries with missing paths as advisories without removing them', async () => {
     const ghostPath = '/totally/missing/' + Math.random();
     await writePeers({ peers: { phantom: { path: ghostPath } } });
@@ -167,6 +190,21 @@ describe('sweep', () => {
     const result = await sweep();
     expect(result.removed.projectDirs).toContain(`headless/${PROJ}`);
     expect(result.removed.projectDirs).toContain(`logs/${PROJ}`);
+  });
+
+  it('removes extension manifests whose peer paths are all gone', async () => {
+    await mkdir(join(t.tmp.root, 'extensions'), { recursive: true });
+    await writeFile(
+      join(t.tmp.root, 'extensions', 'stale.json'),
+      JSON.stringify({ name: 'stale', peers: [{ alias: 'x', path: '/totally/missing/' + Math.random() }] }),
+    );
+    await writeFile(
+      join(t.tmp.root, 'extensions', 'live.json'),
+      JSON.stringify({ name: 'live', peers: [{ alias: 'y', path: process.cwd() }] }),
+    );
+    const result = await sweep();
+    expect(result.removed.extensions).toContain('stale.json');
+    expect(result.removed.extensions).not.toContain('live.json');
   });
 
 });

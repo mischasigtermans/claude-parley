@@ -1,8 +1,8 @@
 # Changelog
 
-## [0.3.0] - 2026-05-12
+## [0.3.0] - 2026-05-19
 
-Per-asker-project scoping for headless peer state. Each asking project now gets its own cached Claude session, transcript log, and turn count with each peer. Cross-asker context isolation by default.
+Per-asker-project scoping for headless peer state, and one continuous conversation per (project, `<peer>`) across transports. Each asking project gets its own cached Claude session, transcript log, and turn count with each peer. Closing a Terminal between turns no longer loses memory. The next ask resumes the cached claude session whether it routes live again or falls back to headless.
 
 **Breaking**
 
@@ -11,23 +11,31 @@ Per-asker-project scoping for headless peer state. Each asking project now gets 
 
 **Added**
 
-- `paths.projectId(cwd)` (async): SHA1 of git remote URL when available, fallback to CWD. First 12 hex chars. Matches the personas plugin's algorithm so the two plugins compute identical IDs from the same CWD.
-- `paths.headlessProjectDir(projectId)` and `paths.logsProjectDir(projectId)` helpers for sweep/diagnostic tools.
-- Branded `ProjectId` type. Function signatures that took `string` for project IDs now take `ProjectId`; argument-order swaps fail to compile.
-- `ParleyContext.getProjectId()` with server-lifetime memoization. Subsequent `parley_*` calls within a session no longer fork `git config` repeatedly.
+- **Per-asker-project scoping.** `paths.projectId(cwd)` returns SHA1 of the git remote URL when available, falling back to CWD. First 12 hex chars. The personas plugin uses the same algorithm so both compute identical IDs from the same CWD. `paths.headlessProjectDir(projectId)` and `paths.logsProjectDir(projectId)` helpers for sweep/diagnostic tools. Branded `ProjectId` type so function signatures that took `string` for project IDs now take `ProjectId`; argument-order swaps fail to compile. `ParleyContext.getProjectId()` memoizes for server lifetime, so subsequent `parley_*` calls within a session don't fork `git config` repeatedly.
+- **Session pointer in the headless cache.** After a successful live answer, parley writes the listener's `claudeSessionId` into `~/.claude/parley/headless/<projectId>/<alias>.json` with `origin: "live"`. The next `parley_ask` (live or headless) resumes the same claude session. `HeadlessRecord` gains an `origin?: 'live' | 'headless'` field.
+- **Listener-match on multi-listener peers.** When 2+ `/parley listen` sessions exist for the same project path, the router prefers the one whose `claudeSessionId` matches the asker's cached pointer (a thread continuation) before falling back to the existing disambiguation error.
+- **`SessionStart` hook captures claude's session UUID.** `register.sh` reads the hook payload from stdin and writes `session_id` into `manifest.claudeSessionId`. Was previously always `null`. Older Claude Code versions still work via the `CLAUDE_ENV_FILE` fallback.
+- **New `fallback` config knob.** `~/.claude/parley/config.json`:
+  ```json
+  {
+    "runtime": { "fallback": "headless" },
+    "permissions": { "skip_default": true }
+  }
+  ```
+  - `headless` (default): spawn `claude -p` immediately, charging the Agent SDK credit pool. No window opens.
+  - `ask`: error with options listed; the skill prompts the user in natural language. Open the peer and run `/parley listen` to answer live at zero SDK credit.
+  Env override: `PARLEY_FALLBACK`.
+- **Extensions mechanism.** Plugins can register peers by dropping a manifest at `~/.claude/parley/extensions/<name>.json` listing the peers they expose. Parley merges those into `parley_peers` and resolves them in `parley_ask` like any other peer. Extension peers carry `model`, `mcpServers`, and `skipPermissions` through to the headless spawn, same as `peers.json` entries. User-curated `peers.json` wins on alias collision. See [`docs/extensions.md`](docs/extensions.md) for the schema.
+- **Server-side lazy auto-clean.** The MCP server runs the same sweep that `parley_clean` does, lazily on `listLiveSessions` after a 1-hour cooldown. The `parley_clean({auto: true})` skill instruction is dropped. No more wasted tool roundtrip on every `/parley` action.
 - `isHeadlessRecord(v)` type guard. `readHeadless` returns `null` on corrupt cache files instead of feeding garbage to `--resume`.
 - `ToolDef<TArgs>` is generic. Each tool can declare a typed `parseArgs(raw)`; the dispatcher applies it before invoking `handler`. Eleven tools migrated; defensive `String(args.peer)` coercion in handlers is gone.
 - `PeerConfig.type?: string` field. Optional type classification (e.g. `'persona'`). Cooperating plugins set this to mark what a peer represents; user-managed entries leave it absent.
 
 **Changed**
 
-- Sid cache now keyed by `(asker_project_id, peer)` instead of `(peer)` alone. State moves to `~/.claude/parley/headless/<project_id>/<alias>.json`.
-- Transcript log scoped per `(asker_project_id, peer)`. State moves to `~/.claude/parley/logs/<project_id>/<alias>.md`.
-- Lock files scoped per `(asker_project_id, peer)`: `~/.claude/parley/locks/<project_id>-<alias>.lock`.
-- `parley_peers` History column shows turns from the calling project, not global.
-- `parley_log <alias>` shows transcript from the calling project, not global.
-- `parley_reset <alias>` only clears the calling project's cached session, not other projects'.
-- `HeadlessRecord` gains `projectId: ProjectId`. Record is now self-describing.
+- **Config moves from TOML to JSON.** `~/.claude/parley/config.toml` becomes `~/.claude/parley/config.json`. One-time auto-migration on first read: if `config.toml` exists, parley parses it, writes the equivalent `config.json`, and deletes the old file. Nothing for users to do.
+- **State scoped per (asker_project_id, `<peer>`).** Sid cache moves to `~/.claude/parley/headless/<projectId>/<alias>.json`. Transcript log moves to `~/.claude/parley/logs/<projectId>/<alias>.md`. Lock files become `~/.claude/parley/locks/<projectId>-<alias>.lock`. `parley_peers` History column, `parley_log <alias>`, and `parley_reset <alias>` are scoped to the calling project.
+- `HeadlessRecord` gains `projectId: ProjectId`. Record is self-describing.
 - `readHeadless(alias)` → `readHeadless(projectId, alias)`.
 - `clearHeadless(alias)` → `clearHeadless(projectId, alias)`.
 - `appendTurn(...)` and `readTranscript(...)` gain `projectId` as first parameter.
@@ -38,12 +46,30 @@ Per-asker-project scoping for headless peer state. Each asking project now gets 
 - `waitForMessage` and `recoverStuckInProgress` return freshly-constructed `Message` objects with the post-disk status instead of mutating the parsed object in place.
 - `parleyPeers`'s `pushRowsForPath` is hoisted to module level (it closed over nothing).
 - `parley_clean` description now accurately reflects that the auto-clean flag is invoked by the `/parley` skill, not the server.
+- **`--strict-mcp-config` dropped from `claude -p` invocations.** The peer's own `.claude/settings.local.json` MCP servers now load in headless spawns, matching the README's promise. `--mcp-config` is passed only when `peers.json:mcpServers` is non-empty (additive merge).
+- **Response prefix.** `parley_ask` returns `[<peer>]\n\n<answer>` for headless (the silent default), `[<peer> · live]` when the peer answered in their own window. Tier value (`live` / `headless-fresh` / `headless-resumed`) stays in the transcript log for forensics.
+- **`parley_peers` Path column renamed to Location.** Plugin-managed peers render as `<plugin>@<marketplace>`, which isn't a path. The column header is now honest.
+- **`[permissions] skip_default` config knob.** Global default for headless `--dangerously-skip-permissions`. Default `true`. Set `false` in `config.json` to require explicit per-peer opt-in. Per-peer `skipPermissions` in `peers.json` always wins.
+- **`parley_ask` default timeout raised from 5 min to 30 min.** Execution work (running tests, multi-file edits) routinely takes 20+ min. Tool description updated so the AI leaves `timeoutMs` unset by default. Env override: `PARLEY_ASK_TIMEOUT_MS`.
+
+**Removed**
+
+- **`parley_clean` `auto` arg.** The auto-cooldown logic moved server-side. Explicit `/parley clean` still works for ad-hoc inspection. The `--dry-run` flag is unchanged.
 
 **Fixed**
 
 - Version string in `server.ts` now matches `plugin.json` (was lagging at `0.2.2`).
 - `atomicWriteJSON` no longer does a dynamic `import('node:fs/promises')` for `rename`; statically imported.
 - Magic `15` in `session-resolver.ts:findClaudePid` named as `MAX_ANCESTOR_DEPTH` with a comment explaining why.
+- **Legacy `config.toml` migration preserves the source on parse failure.** Previously a malformed TOML was silently replaced with a defaulted `config.json` and the original deleted. Now the migration only deletes the legacy file when at least one field parsed; on total parse failure, a stderr warning prints and the TOML stays put.
+- **Extension peer aliases are validated.** Manifests declaring path-traversal aliases (e.g. `"../foo"`) are dropped with a stderr advisory instead of being interpolated into filenames under `headless/`, `logs/`, `locks/`.
+- **`readParleyConfig` surfaces non-ENOENT errors.** Previously `EACCES`/`EPERM` silently fell back to defaults (including `skip_default: true`). Now permission errors propagate to the tool surface.
+- **One session per peer across all its aliases.** Headless cache, transcript, and `parley_reset` now key on the peer's canonical alias, not the typed one. Asking a multi-alias peer (e.g. a persona reachable as `steve`, `steve-jobs`, or `jobs`) by different aliases resumes one continuous session instead of forking a fresh one per alias. The `parley_peers` History column reflects the same key.
+- **Headless spawns no longer self-register as peers.** A `claude -p` spawned by `parley_ask` inherits `PARLEY_SUPPRESS_REGISTER=1`, so its `SessionStart` hook skips registration. Transient queries no longer leave phantom "active windows" in the session registry.
+
+**Known assumptions**
+
+- Single user. The live-tier session-pointer writeback in `router.ts` is not lock-guarded; two overlapping live replies can race on `turnCount` / `claudeSessionId`. Acceptable for v0.3.0 where concurrent multi-process use is not supported. Headless asks ARE serialised via per-(asker, peer) file lock.
 
 ## [0.2.3] - 2026-05-11
 
@@ -69,7 +95,7 @@ Per-asker-project scoping for headless peer state. Each asking project now gets 
 
 **Added**
 
-- Multi-session per project. Each Claude Code window in the same repo registers its own parley session and shows up as a separate row in `parley_peers`. Listening sessions are addressable individually as `alias:sid` (e.g. `parley_ask onoma:a6v9lk '...'`). With 2+ listening sessions for the same path and no `:sid` suffix, the router returns an error listing the live sids so the caller can pick.
+- Multi-session per project. Each Claude Code window in the same repo registers its own parley session and shows up as a separate row in `parley_peers`. Listening sessions are addressable individually as `alias:sid` (e.g. `parley_ask peer:a6v9lk '...'`). With 2+ listening sessions for the same path and no `:sid` suffix, the router returns an error listing the live sids so the caller can pick.
 - `parley_status` flags Claude Code projects active in the last 60 minutes that have no parley registration. Catches the case where the SessionStart hook didn't fire (e.g. plugin enabled after Claude was already open).
 - `parley_peers` auto-sweeps stale `by-claude-pid/` sentinels at most once per 60 seconds. Stops the sentinel directory from growing unbounded between explicit `parley_clean` calls.
 

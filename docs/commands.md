@@ -1,6 +1,6 @@
 # Commands
 
-Parley exposes two surfaces: slash commands for explicit operations, and natural-language triggers handled by the `parley` skill ('ask onoma about X'). Both route to the same MCP tools.
+Parley exposes two surfaces: slash commands for explicit operations, and natural-language triggers handled by the `parley` skill ('ask <peer> about X'). Both route to the same MCP tools.
 
 ## Slash commands
 
@@ -27,8 +27,8 @@ These are reachable from any other MCP-capable client (Claude Desktop, Cursor) b
 
 ## How the skill routes
 
-The `parley` skill picks up both slash commands and natural-language triggers ('ask onoma about X'). It calls the relevant MCP tool, formats the result, and decides whether to continue listening or close out. The slash commands are explicit operational entry points; the skill handles conversational cases.
+The `parley` skill picks up both slash commands and natural-language triggers ('ask <peer> about X'). It calls the relevant MCP tool, formats the result, and decides whether to continue listening or close out. The slash commands are explicit operational entry points; the skill handles conversational cases.
 
 ## Multi-session disambiguation
 
-With 2+ listening sessions for the same path, address a specific one as `alias:sid` (e.g. `/parley ask onoma:a6v9lk '...'`). Without `:sid` and multiple live sessions, the router returns an error listing the live sids so the caller can pick.
+With 2+ listening sessions for the same path, address a specific one as `<alias>:<sid>` (e.g. `/parley ask <peer>:a6v9lk '...'`). Without `:sid` and multiple live sessions, the router returns an error listing the live sids so the caller can pick.

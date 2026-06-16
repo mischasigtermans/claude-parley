@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# get-session-id.sh — Resolve the Parley session ID for the current Claude
+# get-session-id.sh: Resolve the Parley session ID for the current Claude
 # Code session.
 # Strategy:
 #   1. $PARLEY_SESSION_ID env var

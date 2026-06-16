@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# send-message.sh — Drop a message JSON into a target session's inbox.
+# send-message.sh: Drop a message JSON into a target session's inbox.
 # Usage:   send-message.sh <target-id> <type> <content> [in-reply-to]
-# Env:     BRIDGE_SESSION_ID (required) — sender's parley session ID
+# Env:     BRIDGE_SESSION_ID (required): sender's parley session ID
 #          PARLEY_DIR (default ~/.claude/parley)
 # Outputs: message ID on stdout
 set -euo pipefail

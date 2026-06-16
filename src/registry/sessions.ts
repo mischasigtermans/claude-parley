@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { paths } from './paths.js';
 import { atomicWriteJSON, withLock } from './locks.js';
 import { isErrnoException } from '../util/errors.js';
+import { readState, touchLastClean } from './state.js';
 
 export type Platform = 'cli' | 'desktop' | 'unknown';
 export type Mode = 'code' | 'cowork';
@@ -105,9 +106,41 @@ export async function listSessions(): Promise<SessionManifest[]> {
 }
 
 export async function listLiveSessions(): Promise<SessionManifest[]> {
+  await maybeAutoSweep();
   const sessions = await listSessions();
   const now = Date.now();
   return sessions.filter((s) => now - new Date(s.lastHeartbeat).getTime() < STALE_AFTER_MS);
+}
+
+const AUTO_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
+let sweepInFlight: Promise<void> | null = null;
+
+/**
+ * Lazy server-side auto-clean. Triggered by listLiveSessions on every call,
+ * but no-ops if state.json.lastCleanAt is within the cooldown window. Awaitable
+ * so test ordering stays deterministic; in-flight flag dedupes concurrent
+ * callers within the same MCP server process.
+ */
+async function maybeAutoSweep(): Promise<void> {
+  if (sweepInFlight) return sweepInFlight;
+  const state = await readState();
+  if (state.lastCleanAt) {
+    const last = new Date(state.lastCleanAt).getTime();
+    if (Number.isFinite(last) && Date.now() - last < AUTO_SWEEP_INTERVAL_MS) return;
+  }
+  sweepInFlight = runAutoSweep().finally(() => { sweepInFlight = null; });
+  return sweepInFlight;
+}
+
+async function runAutoSweep(): Promise<void> {
+  try {
+    // Dynamic import avoids a sessions↔sweep import cycle.
+    const { sweep } = await import('../cleanup/sweep.js');
+    await sweep({ dryRun: false });
+    await touchLastClean(new Date());
+  } catch (err) {
+    process.stderr.write(`parley: auto-sweep failed: ${err instanceof Error ? err.message : String(err)}\n`);
+  }
 }
 
 export async function listLiveByPath(projectPath: string): Promise<SessionManifest[]> {

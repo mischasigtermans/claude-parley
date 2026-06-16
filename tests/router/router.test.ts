@@ -1,10 +1,12 @@
 import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { writeManifest, setStatus } from '../../src/registry/sessions.js';
 import { writePeers } from '../../src/registry/peers.js';
 import { writeHeadless, readHeadless } from '../../src/registry/headless.js';
 import { paths } from '../../src/registry/paths.js';
 import { routeAsk } from '../../src/routing/router.js';
+import { writeParleyConfig } from '../../src/config.js';
 import { _setClaudeDriverForTesting } from '../../src/drivers/claude.js';
 import type { ProjectId } from '../../src/registry/paths.js';
 import { createMockDriver } from '../helpers/mock-driver.js';
@@ -340,9 +342,227 @@ describe('routeAsk', () => {
         fromProject: 'caller',
         fromProjectId: CALLER_PROJ,
       });
-      expect(spy.mock.calls.length).toBeLessThanOrEqual(1);
+      // routeAsk itself reads peers.json once; the lazy auto-sweep (triggered
+      // by the first listLiveSessions call after cooldown expiry) reads it again.
+      // sweepInFlight dedupes further calls.
+      expect(spy.mock.calls.length).toBeLessThanOrEqual(2);
     } finally {
       spy.mockRestore();
     }
+  });
+
+  it('live writeback updates pointer with listener claudeSessionId + origin=live', async () => {
+    const mock = createMockDriver();
+    _setClaudeDriverForTesting(mock);
+    await writePeers({ peers: { peer1: { path: '/abs/peer1' } } });
+    await writeManifest({
+      sessionId: 'lst-live',
+      claudeSessionId: 'claude-uuid-live',
+      projectPath: '/abs/peer1',
+      projectName: 'peer1',
+      alias: 'peer1',
+      startedAt: new Date().toISOString(),
+      lastHeartbeat: new Date().toISOString(),
+      status: 'registered',
+      pid: process.pid,
+    });
+    await setStatus('lst-live', 'listening');
+
+    // Kick off routeAsk; inject a response so routeLive resolves.
+    const askPromise = routeAsk({
+      peerRef: 'peer1',
+      question: 'q',
+      fromSessionId: FROM_SESSION,
+      fromProject: 'caller',
+      fromProjectId: CALLER_PROJ,
+      timeoutMs: 2000,
+    });
+    const queue = await import('../../src/routing/queue.js');
+    await new Promise((r) => setTimeout(r, 80));
+    const fs = await import('node:fs/promises');
+    let msgId: string | undefined;
+    for (const dir of [paths.sessionInbox('lst-live'), paths.sessionInboxInProgress('lst-live')]) {
+      const files = (await fs.readdir(dir).catch(() => [])).filter((f) => f.endsWith('.json'));
+      if (files.length > 0) {
+        msgId = JSON.parse(await fs.readFile(`${dir}/${files[0]}`, 'utf8')).id;
+        break;
+      }
+    }
+    expect(msgId).toBeTruthy();
+    await queue.sendMessage({
+      fromSessionId: 'lst-live',
+      fromProject: 'peer1',
+      toSessionId: FROM_SESSION,
+      type: 'response',
+      content: 'live answer',
+      inReplyTo: msgId!,
+    });
+    const result = await askPromise;
+    expect(result.tier).toBe('live');
+    expect(result.answer).toBe('live answer');
+
+    const cached = await readHeadless(CALLER_PROJ, 'peer1');
+    expect(cached?.claudeSessionId).toBe('claude-uuid-live');
+    expect(cached?.origin).toBe('live');
+  });
+
+  it('listener-match picks the listener whose claudeSessionId matches the cached pointer', async () => {
+    const mock = createMockDriver();
+    _setClaudeDriverForTesting(mock);
+    await writePeers({ peers: { peer1: { path: '/abs/peer1' } } });
+    // Two listeners, only one matches.
+    for (const [sid, csid] of [['lst-other', 'claude-other'], ['lst-mine', 'claude-mine']] as const) {
+      await writeManifest({
+        sessionId: sid,
+        claudeSessionId: csid,
+        projectPath: '/abs/peer1',
+        projectName: 'peer1',
+        alias: 'peer1',
+        startedAt: new Date().toISOString(),
+        lastHeartbeat: new Date().toISOString(),
+        status: 'registered',
+        pid: process.pid,
+      });
+      await setStatus(sid, 'listening');
+    }
+    await writeHeadless({
+      projectId: CALLER_PROJ,
+      alias: 'peer1',
+      claudeSessionId: 'claude-mine',
+      cwd: '/abs/peer1',
+      createdAt: new Date().toISOString(),
+      lastUsedAt: new Date().toISOString(),
+      turnCount: 5,
+      origin: 'live',
+    });
+
+    // Should route to lst-mine, not error with multi-listener disambiguation.
+    const askPromise = routeAsk({
+      peerRef: 'peer1',
+      question: 'q',
+      fromSessionId: FROM_SESSION,
+      fromProject: 'caller',
+      fromProjectId: CALLER_PROJ,
+      timeoutMs: 1500,
+    });
+    const fs = await import('node:fs/promises');
+    const queue = await import('../../src/routing/queue.js');
+    await new Promise((r) => setTimeout(r, 80));
+    let msgId: string | undefined;
+    for (const dir of [paths.sessionInbox('lst-mine'), paths.sessionInboxInProgress('lst-mine')]) {
+      const files = (await fs.readdir(dir).catch(() => [])).filter((f) => f.endsWith('.json'));
+      if (files.length > 0) {
+        msgId = JSON.parse(await fs.readFile(`${dir}/${files[0]}`, 'utf8')).id;
+        break;
+      }
+    }
+    expect(msgId).toBeTruthy(); // Confirms message went to lst-mine, not lst-other
+    await queue.sendMessage({
+      fromSessionId: 'lst-mine',
+      fromProject: 'peer1',
+      toSessionId: FROM_SESSION,
+      type: 'response',
+      content: 'matched',
+      inReplyTo: msgId!,
+    });
+    const result = await askPromise;
+    expect(result.answer).toBe('matched');
+  });
+
+  it('fallback="ask" throws the no-listener error with cost note', async () => {
+    await writePeers({ peers: { peer1: { path: '/abs/peer1' } } });
+    await writeParleyConfig({ fallback: 'ask' });
+
+    await expect(
+      routeAsk({
+        peerRef: 'peer1',
+        question: 'q',
+        fromSessionId: FROM_SESSION,
+        fromProject: 'caller',
+        fromProjectId: CALLER_PROJ,
+      }),
+    ).rejects.toThrow(/no live listener for "peer1".*fallback="ask".*Agent SDK credit pool/s);
+  });
+});
+
+describe('routeAsk extension peers', () => {
+  const t = setup();
+  beforeEach(async () => {
+    await t.before();
+    await registerCaller();
+  });
+  afterEach(async () => {
+    _setClaudeDriverForTesting(null);
+    await t.after();
+  });
+
+  // Use a real directory so the lazy auto-clean (which prunes manifests whose
+  // peer paths are all missing on disk) doesn't delete it between asks.
+  async function writePersonasManifest(): Promise<string> {
+    const stevePath = join(t.tmp.root, 'steve-plugin');
+    await mkdir(stevePath, { recursive: true });
+    await mkdir(paths.extensionsDir, { recursive: true });
+    await writeFile(
+      join(paths.extensionsDir, 'personas.json'),
+      JSON.stringify({
+        name: 'personas',
+        peers: [
+          { alias: 'steve-jobs', path: stevePath, type: 'persona', model: 'opus', skipPermissions: true },
+          { alias: 'steve', path: stevePath, type: 'persona', model: 'opus', skipPermissions: true },
+          { alias: 'jobs', path: stevePath, type: 'persona', model: 'opus', skipPermissions: true },
+        ],
+      }),
+    );
+    return stevePath;
+  }
+
+  it('passes model/skipPermissions/cwd from the manifest to the driver', async () => {
+    const mock = createMockDriver({ output: 'a', sessionId: 'sid-1' });
+    _setClaudeDriverForTesting(mock);
+    const stevePath = await writePersonasManifest();
+
+    await routeAsk({
+      peerRef: 'steve',
+      question: 'q',
+      fromSessionId: FROM_SESSION,
+      fromProject: 'caller',
+      fromProjectId: CALLER_PROJ,
+    });
+
+    expect(mock.invocations[0].model).toBe('opus');
+    expect(mock.invocations[0].skipPermissions).toBe(true);
+    expect(mock.invocations[0].cwd).toBe(stevePath);
+  });
+
+  it('keys one session per peer regardless of which alias is used', async () => {
+    const mock = createMockDriver({ output: 'a', sessionId: 'sid-shared' });
+    _setClaudeDriverForTesting(mock);
+    await writePersonasManifest();
+
+    const r1 = await routeAsk({
+      peerRef: 'jobs',
+      question: 'q1',
+      fromSessionId: FROM_SESSION,
+      fromProject: 'caller',
+      fromProjectId: CALLER_PROJ,
+    });
+    expect(r1.alias).toBe('steve-jobs');
+    expect(r1.tier).toBe('headless-fresh');
+
+    const r2 = await routeAsk({
+      peerRef: 'steve',
+      question: 'q2',
+      fromSessionId: FROM_SESSION,
+      fromProject: 'caller',
+      fromProjectId: CALLER_PROJ,
+    });
+    expect(r2.alias).toBe('steve-jobs');
+    expect(r2.tier).toBe('headless-resumed');
+    expect(mock.invocations[1].sessionId).toBe('sid-shared');
+
+    const canonical = await readHeadless(CALLER_PROJ, 'steve-jobs');
+    expect(canonical?.turnCount).toBe(2);
+    expect(await readHeadless(CALLER_PROJ, 'steve')).toBeNull();
+    expect(await readHeadless(CALLER_PROJ, 'jobs')).toBeNull();
   });
 });

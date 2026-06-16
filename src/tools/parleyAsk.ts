@@ -11,13 +11,13 @@ interface Args {
 export const parleyAsk: ToolDef<Args> = {
   name: 'parley_ask',
   description:
-    "Send a question to another project's Claude agent and return its answer. The peer is identified by alias (preferred, see parley_peers), by absolute path, or by alias:sid to target a specific listening session. Routing is automatic: live if exactly one /parley listen session matches, otherwise headless (resumed if a cached session exists, fresh otherwise). With 2+ listening sessions and no :sid, parley returns an error listing the available sids so you can retry with the explicit suffix. Headless agents run in the peer's project directory with full CLAUDE.md, skills, and tools loaded. A concise directive is always prepended to keep the peer focused. The peer's response is appended to a transcript log readable via parley_log.",
+    "Send a question to another project's Claude agent and return its answer. Parley keeps one continuous conversation per (project, peer): a live listener answers in its window when one exists; otherwise it spawns headless `claude -p` in the peer's directory. Either path resumes the same claude session via --resume, so closing a window between turns doesn't lose memory. Peer is identified by alias (preferred, see parley_peers), by absolute path, or by alias:sid for a specific listener. The peer's project directory and CLAUDE.md/skills/MCP servers are loaded. Response is logged via parley_log.",
   inputSchema: {
     type: 'object',
     properties: {
       peer: {
         type: 'string',
-        description: 'Peer alias (e.g. "stagent"), alias:sid for a specific listening session (e.g. "onoma:a6v9lk"), or absolute project path. Run parley_peers to see options.',
+        description: 'Peer alias, `<alias>:<sid>` for a specific listening session (e.g. `<peer>:a6v9lk`), or absolute project path. Run parley_peers to see options.',
       },
       question: {
         type: 'string',
@@ -25,7 +25,7 @@ export const parleyAsk: ToolDef<Args> = {
       },
       timeoutMs: {
         type: 'number',
-        description: 'Optional. Max time to wait for the peer to respond. Default 300000 (5 min).',
+        description: 'Optional. Max ms to wait for the peer to respond. Leave unset unless you specifically need a tight bound; peers doing execution work can take 30+ min. Default 1800000 (30 min). Override the default globally via PARLEY_ASK_TIMEOUT_MS.',
       },
     },
     required: ['peer', 'question'],
@@ -58,6 +58,11 @@ export const parleyAsk: ToolDef<Args> = {
       timeoutMs: args.timeoutMs,
     });
 
-    return `[${result.alias} via ${result.tier}]\n\n${result.answer}`;
+    // Live is the noteworthy case (the peer answered in their own window);
+    // headless is the silent default. Resume vs fresh stays in the transcript.
+    const prefix = result.tier === 'live'
+      ? `[${result.alias} · live]`
+      : `[${result.alias}]`;
+    return `${prefix}\n\n${result.answer}`;
   },
 };

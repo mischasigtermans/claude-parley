@@ -1,11 +1,11 @@
 ---
 name: parley
-description: Lets one Claude Code project consult another on the same machine. Activates when the user references another project or peer agent by name ('ask stagent', 'what does onoma think') or invokes `/parley` to manage peers (list, discover, add, listen, ask, log). Drives the listen-mode receive loop when this session answers peers. All routing goes through the `parley` MCP server.
+description: Lets one Claude Code project consult another on the same machine. Activates when the user references another project or peer agent by name ("ask <peer> about X", "what does <peer> think") or invokes `/parley` to manage peers (list, discover, add, listen, ask, log). Drives the listen-mode receive loop when this session answers peers. All routing goes through the `parley` MCP server.
 ---
 
 # Parley
 
-Lets one Claude Code project consult another on the same machine. Each project becomes a peer agent, addressable by short alias (e.g. `stagent`, `onoma`). Peers are real Claude Code sessions running in their own project directories with their own CLAUDE.md, skills, and tools.
+Lets one Claude Code project consult another on the same machine. Each project becomes a peer agent, addressable by short alias. Peers are real Claude Code sessions running in their own project directories with their own CLAUDE.md, skills, and tools.
 
 State and routing are owned by the `parley` MCP server. **Use the `parley_*` tools for every operation. Never `Bash` peers.json or session manifests.** If a tool seems missing, flag it. Don't fall back to bash.
 
@@ -13,7 +13,7 @@ State and routing are owned by the `parley` MCP server. **Use the `parley_*` too
 
 Two paths. Decide which one applies before reading further.
 
-1. **Awareness path.** The user named another project or peer in natural language ("ask stagent how they handle X", "what does onoma think", "pull the spec from blog"). Take the *resolve → ask* sequence below. Most common case.
+1. **Awareness path.** The user named another project or peer in natural language ("ask <peer> how they handle X", "what does <peer> think", "pull the spec from <peer>"). Take the *resolve → ask* sequence below. Most common case.
 2. **Explicit path.** The user typed `/parley`, `/parley <action>`, or asked operationally ("list peers", "listen", "discover projects"). Jump to *Actions*.
 
 If the user typed `/parley` with no argument, run the *discovery menu* under Actions.
@@ -26,7 +26,7 @@ If the user typed `/parley` with no argument, run the *discovery menu* under Act
 
 Look for cues that the user wants input from *another* project:
 
-- "ask stagent how they handle X" / "check with onoma" / "what does <peer> think"
+- "ask <peer> how they handle X" / "check with <peer>" / "what does <peer> think"
 - "look at how <project> does this" / "pull the spec from <peer>"
 - "see what <peer> did for retries" / "the design from <other-project>"
 - A project name you recognize from the user's environment that isn't this one.
@@ -43,9 +43,7 @@ Then run the *ask sequence*.
 
 ## Actions
 
-**Before any action below**, call `parley_clean({auto: true})`. If the result is non-empty, print it as a header. The server enforces a 1-hour cooldown, so most calls no-op silently.
-
-Then parse the argument the user supplied with `/parley` (or the operational request) and dispatch.
+Parse the argument the user supplied with `/parley` (or the operational request) and dispatch. The MCP server auto-cleans stale state on the first session-listing call after the 1-hour cooldown expires; no manual sweep call is needed.
 
 ### `(no argument)`: discovery menu
 
@@ -58,7 +56,7 @@ Then parse the argument the user supplied with `/parley` (or the operational req
 
      parley discover                  scan ~/.claude/projects for projects you've used recently
      parley add <alias> <path>        register a peer manually
-       e.g. parley add stagent ~/Sites/stagent
+       e.g. parley add <peer> ~/code/<peer>
 
    Or open another Claude Code or Cowork session in any project.
    It auto-registers itself the moment its session starts, and shows up here.
@@ -110,7 +108,7 @@ Call `parley_reset`. Print confirmation. Use when a peer's headless agent has go
 
 ### `clean [--dry-run]`
 
-Call `parley_clean`. Pass `dryRun: true` if `--dry-run` was supplied. Print the result. Removes stale session manifests, dead PID sentinels, and headless caches for peers no longer in `peers.json`. Idempotent.
+Call `parley_clean`. Pass `dryRun: true` if `--dry-run` was supplied. Print the result. Removes stale session manifests, dead PID sentinels, and headless caches for peers no longer in `peers.json`. Idempotent. The MCP server runs the same sweep automatically once per hour, so explicit cleans are only needed for ad-hoc inspection.
 
 ### `stop`
 
@@ -136,7 +134,7 @@ Once you have a confirmed peer alias and a user question:
    - **Headless resumed**: previous headless session cached. Calls `claude --resume <sid> -p "..."` in the peer's cwd.
    - **Headless fresh**: first time (or after `parley_reset`). Spawns a new `claude -p`. Subsequent calls reuse that session.
 
-   You don't pick the route. The response prefix tells you which was used: `[stagent via headless-resumed]`.
+   You don't pick the route. The response prefix tells you when it routed live: `[peer · live]`. Headless (the silent default) shows as just `[peer]`. Resume vs fresh is recorded in the transcript log only.
 
 3. **Display the answer**, then **act on it**. Don't just dump and stop. If the peer told you a type signature, apply it. If they described a migration step, run it. If they asked a follow-up, answer it (`parley_ask` again, same peer; the headless session resumes).
 
@@ -146,8 +144,8 @@ Once you have a confirmed peer alias and a user question:
 
 Make this session the live answerer for its project, then run the receive loop.
 
-1. Call `parley_listen`. Its return value contains the addressable form `alias:sid` for this session — print that line verbatim so the user can copy the sid.
-2. Tell the user: *"Listening for peer messages as `<alias:sid>`... (press Escape to interrupt)"* — substitute the actual `alias:sid` from step 1's return.
+1. Call `parley_listen`. Its return value contains the addressable form `alias:sid` for this session. Print that line verbatim so the user can copy the sid.
+2. Tell the user: *"Listening for peer messages as `<alias:sid>`... (press Escape to interrupt)"*. Substitute the actual `alias:sid` from step 1's return.
 3. Enter the loop:
    1. Call `parley_receive_next` (this BLOCKS until a message arrives).
    2. Parse the output: lines before `---` are headers (`MESSAGE_ID`, `FROM_ID`, `TO_ID`, `FROM_PROJECT`, `TYPE`, `IN_REPLY_TO`); lines after are the content.

@@ -62,14 +62,17 @@ describe('parseClaudeStreamOutput', () => {
 });
 
 describe('buildClaudeArgs', () => {
-  it('always sets stream-json output, verbose, and strict mcp config', () => {
+  it('sets stream-json output and verbose; omits mcp-config and skip-permissions by default', () => {
     const args = buildClaudeArgs({ cwd: '/tmp', prompt: 'hi' });
     expect(args).toContain('--output-format');
     expect(args[args.indexOf('--output-format') + 1]).toBe('stream-json');
     expect(args).toContain('--verbose');
-    expect(args).toContain('--strict-mcp-config');
-    expect(args).toContain('--mcp-config');
-    expect(args).toContain('--dangerously-skip-permissions');
+    // v0.3.0: don't pass --strict-mcp-config so the peer's own MCP servers load.
+    expect(args).not.toContain('--strict-mcp-config');
+    // No --mcp-config when peers.json:mcpServers is absent.
+    expect(args).not.toContain('--mcp-config');
+    // skipPermissions defaults to undefined; flag only appears when explicitly true.
+    expect(args).not.toContain('--dangerously-skip-permissions');
   });
 
   it('passes --resume when sessionId is set', () => {
@@ -86,26 +89,21 @@ describe('buildClaudeArgs', () => {
     expect(args[idx + 1]).toBe('sonnet');
   });
 
-  it('emits empty mcpServers config by default', () => {
-    const args = buildClaudeArgs({ cwd: '/tmp', prompt: 'hi' });
-    const cfgIdx = args.indexOf('--mcp-config');
-    const cfg = JSON.parse(args[cfgIdx + 1]);
-    expect(cfg).toEqual({ mcpServers: {} });
-  });
-
-  it('emits the per-peer mcpServers config when provided', () => {
+  it('emits the per-peer mcpServers config when provided (additive, no --strict-mcp-config)', () => {
     const args = buildClaudeArgs({
       cwd: '/tmp',
       prompt: 'hi',
       mcpServers: { Linear: { command: 'foo', args: [] } },
     });
     const cfgIdx = args.indexOf('--mcp-config');
+    expect(cfgIdx).toBeGreaterThan(-1);
     const cfg = JSON.parse(args[cfgIdx + 1]);
     expect(cfg.mcpServers.Linear).toBeDefined();
+    expect(args).not.toContain('--strict-mcp-config');
   });
 
-  it('omits skip-permissions when explicitly disabled', () => {
-    const args = buildClaudeArgs({ cwd: '/tmp', prompt: 'hi', skipPermissions: false });
-    expect(args).not.toContain('--dangerously-skip-permissions');
+  it('adds --dangerously-skip-permissions when skipPermissions=true', () => {
+    const args = buildClaudeArgs({ cwd: '/tmp', prompt: 'hi', skipPermissions: true });
+    expect(args).toContain('--dangerously-skip-permissions');
   });
 });

@@ -9,6 +9,7 @@ import {
   SessionManifest,
 } from '../registry/sessions.js';
 import { readHeadless } from '../registry/headless.js';
+import { readExtensions } from '../registry/extensions.js';
 import { expandHome, type ProjectId } from '../registry/paths.js';
 
 interface Row {
@@ -17,14 +18,14 @@ interface Row {
   source: string;
   mode: 'headless' | 'listening';
   history: string;
-  path: string;
+  location: string;
   notes: string[];
 }
 
 export const parleyPeers: ToolDef = {
   name: 'parley_peers',
   description:
-    "List all addressable peers on this machine. Call this FIRST whenever the user references another project by name (e.g. 'ask stagent about X', 'check with onoma', 'what does Y think'). Each peer gets a headless row (always reachable, alias-keyed) plus one row per /parley listen session at that path (addressable as alias:sid). Use the result to pick the right peer ref before calling parley_ask. Returns a markdown table: Peer, Type ('project' by default; 'persona' for entries managed by the personas plugin), Source (Code / Code CLI / Cowork / '-'), Mode (headless/listening), History (turns of cached headless conversation from the calling project, or '-'), Path, Notes.",
+    "List all addressable peers on this machine. Call this FIRST whenever the user references another project by name (e.g. 'ask <peer> about X', 'check with <peer>'). Each peer gets a headless row (always reachable, alias-keyed) plus one row per /parley listen session at that path (addressable as alias:sid). Includes peers from ~/.claude/parley/peers.json AND from any extension manifests under ~/.claude/parley/extensions/. Use the result to pick the right peer ref before calling parley_ask. Returns a markdown table: Peer, Type, Source, Mode (headless/listening), History (turns of cached headless conversation from the calling project, or '-'), Location (filesystem path, or `<plugin>@<marketplace>` for plugin-managed peers), Notes.",
   inputSchema: {
     type: 'object',
     properties: {},
@@ -60,6 +61,31 @@ export const parleyPeers: ToolDef = {
       });
     }
 
+    // Extension-provided peers. User-curated peers above
+    // already won; extensions can't override an alias that exists in peers.json.
+    const extensions = await readExtensions();
+    const userAliases = new Set(Object.keys(peersFile.peers));
+    for (const ext of extensions) {
+      if (userAliases.has(ext.alias)) continue;
+      const path = expandHome(ext.path);
+      if (seenPaths.has(path)) continue;
+      seenPaths.add(path);
+      const sessions = await listLiveByPath(path);
+      await pushRowsForPath({
+        rows,
+        alias: ext.alias,
+        displayPath: formatPath(ext.path, ext.type),
+        sessions,
+        discovered: false,
+        description: ext.description,
+        mySid,
+        skipHeadless: path === myPath,
+        fromProjectId,
+        type: ext.type,
+        extension: ext.extension,
+      });
+    }
+
     for (const s of live) {
       if (seenPaths.has(s.projectPath)) continue;
       if (mySid && s.sessionId === mySid && s.projectPath !== myPath) continue;
@@ -81,9 +107,18 @@ export const parleyPeers: ToolDef = {
       return 'No peers found. Add one with parley_add, or open another Claude Code session to discover it.';
     }
 
-    const header = '| Peer | Type | Source | Mode | History | Path | Notes |\n|---|---|---|---|---|---|---|';
+    // Sort alphabetically by canonical peer name (strip `:sid` suffixes so
+    // listening rows stay grouped immediately after their headless row).
+    // Stable sort preserves the headless-before-listening order within a peer.
+    rows.sort((a, b) => {
+      const aName = a.peer.split(':')[0];
+      const bName = b.peer.split(':')[0];
+      return aName.localeCompare(bName);
+    });
+
+    const header = '| Peer | Type | Source | Mode | History | Location | Notes |\n|---|---|---|---|---|---|---|';
     const body = rows.map(
-      (r) => `| ${r.peer} | ${r.type} | ${r.source} | ${r.mode} | ${r.history} | \`${r.path}\` | ${r.notes.join('. ')} |`,
+      (r) => `| ${r.peer} | ${r.type} | ${r.source} | ${r.mode} | ${r.history} | \`${r.location}\` | ${r.notes.join('. ')} |`,
     );
     return [header, ...body].join('\n');
   },
@@ -100,6 +135,8 @@ async function pushRowsForPath(opts: {
   skipHeadless: boolean;
   fromProjectId: ProjectId;
   type?: string;
+  /** Extension name when this peer came from an extension manifest. */
+  extension?: string;
 }): Promise<void> {
   const listening = opts.sessions.filter((s) => s.status === 'listening' && s.sessionId !== opts.mySid);
   const nonListening = opts.sessions.filter((s) => s.status !== 'listening' && s.sessionId !== opts.mySid);
@@ -115,8 +152,10 @@ async function pushRowsForPath(opts: {
     if (nonListening.length > 0) {
       headlessNotes.push(`${nonListening.length} active window${nonListening.length === 1 ? '' : 's'}`);
     }
-    if (opts.type === 'persona') {
-      headlessNotes.push('managed with /personas');
+    if (opts.extension) {
+      // Extension peers get a short ownership note. The verbose description
+      // belongs in /<extension> list, not in this table.
+      headlessNotes.push(`managed with /${opts.extension}`);
     } else if (opts.description) {
       headlessNotes.push(opts.description);
     }
@@ -128,7 +167,7 @@ async function pushRowsForPath(opts: {
       source: formatSource(seed?.platform, seed?.mode),
       mode: 'headless',
       history,
-      path: opts.displayPath,
+      location: opts.displayPath,
       notes: headlessNotes,
     });
   }
@@ -140,7 +179,7 @@ async function pushRowsForPath(opts: {
       source: formatSource(s.platform, s.mode),
       mode: 'listening',
       history: '-',
-      path: opts.displayPath,
+      location: opts.displayPath,
       notes: [],
     });
   }

@@ -9,14 +9,14 @@ Location: `~/.claude/parley/peers.json`
 ```json
 {
   "peers": {
-    "stagent": {
-      "path": "~/Sites/stagent",
-      "description": "Booking and management platform for agencies and artists",
-      "skipPermissions": false
+    "peer-a": {
+      "path": "~/code/peer-a",
+      "description": "Short hint to help the skill pick this peer"
     },
-    "onoma": {
-      "path": "~/Github/mischasigtermans/onoma",
-      "description": "Memory layer for AI"
+    "peer-b": {
+      "path": "~/code/peer-b",
+      "description": "Stricter peer; opt out of skip_default",
+      "skipPermissions": false
     }
   }
 }
@@ -28,10 +28,42 @@ Per-peer fields:
 |---|---|---|
 | `path` | string | Absolute or `~`-expanded path to the peer's project root. |
 | `description` | string | Shown in `/parley peers` and used by the skill to pick between peers. |
-| `skipPermissions` | boolean | Default `true`. Headless spawns pass `--dangerously-skip-permissions` to avoid tool prompts. |
+| `skipPermissions` | boolean | Whether to pass `--dangerously-skip-permissions` on headless spawns. Default unset, in which case `[permissions] skip_default` from `config.json` applies (default `true`). Per-peer values always win. |
 | `model` | string | Optional model override for headless spawns. |
-| `mcpServers` | object | Optional per-peer MCP server overrides. |
+| `mcpServers` | object | Optional per-peer MCP server overrides. Additive; the peer's own `.claude/settings.local.json` MCPs still load. |
 | `type` | string | Optional classification. Cooperating plugins set this to mark what a peer represents (e.g. `'persona'`). |
+
+## config.json
+
+Optional file: `~/.claude/parley/config.json`. Tunes parley's routing behavior. All fields are optional; defaults match v0.3 behavior. If a pre-v0.3 `config.toml` exists, parley auto-migrates it to `config.json` on first read and deletes the old file.
+
+```json
+{
+  "runtime": {
+    "fallback": "headless"
+  },
+  "permissions": {
+    "skip_default": true
+  }
+}
+```
+
+`runtime.fallback` is one of `headless | ask`. See below.
+
+### `fallback`
+
+What `parley_ask` does when no live listener exists for the peer. (A live listener is a peer window where you ran `/parley listen`; if one exists, the ask always routes there first, regardless of this setting.)
+
+| Value | Behavior |
+|---|---|
+| `headless` (default) | Spawn `claude -p` in the peer's directory with `--resume <cached sid>` when a pointer exists. No window opens. For Claude subscription users this draws from the Agent SDK credit pool (separate from interactive limits). |
+| `ask` | Error each time with a clear options list. The skill prompts you in natural language. To answer at zero SDK credit, open the peer and run `/parley listen`, then retry. |
+
+Env override: `PARLEY_FALLBACK`.
+
+### `skip_default`
+
+Global default for `skipPermissions` on peers that don't set it explicitly. Default `true` (the ergonomic choice for trusted local peers). Flip to `false` to require explicit per-peer opt-in. Per-peer values in `peers.json` always win.
 
 ## Runtime state
 
@@ -39,39 +71,53 @@ Auto-managed under `~/.claude/parley/`:
 
 | Path | Contents |
 |---|---|
-| `sessions/<sid>/manifest.json` | Per-session registration with heartbeat. |
+| `sessions/<sid>/manifest.json` | Per-session registration with heartbeat. Includes `claudeSessionId` captured from the SessionStart hook payload. |
 | `sessions/<sid>/inbox/` | Pending messages. Subdirs: `in-progress/`, `read/`. |
 | `sessions/<sid>/outbox/` | Sent-message ledger. |
-| `headless/<project_id>/<alias>.json` | Cached headless session ID + turn count per (asker, peer). |
-| `logs/<project_id>/<alias>.md` | Append-only Q&A transcript per (asker, peer). |
+| `headless/<project_id>/<alias>.json` | The peer's session pointer per (asker, peer). Records the last known `claudeSessionId`, `origin: 'live' \| 'headless'`, turn count. Both transports read and write this file so `--resume` works across them. |
+| `logs/<project_id>/<alias>.md` | Append-only Q&A transcript per (asker, peer). Includes the actual tier (`live` / `headless-fresh` / `headless-resumed`) for each turn. |
 | `locks/<project_id>-<alias>.lock` | Per-(asker, peer) lock to serialize concurrent asks. |
+| `extensions/<name>.json` | Manifests from other plugins that register peers. See [extensions.md](extensions.md). |
 | `state.json` | Runtime metadata (last-clean timestamp, etc.). |
 
 ## Permission handling
 
-Headless spawns pass `--dangerously-skip-permissions` by default. To opt out per peer:
+Headless spawns pass `--dangerously-skip-permissions` by default. The peer's own `.claude/settings.local.json` allowlist still applies on top.
+
+Resolution order:
+
+1. If the peer has `"skipPermissions"` set in `peers.json`, that wins.
+2. Otherwise, `permissions.skip_default` from `config.json` decides (default `true`).
+
+To tighten things up machine-wide, set `permissions.skip_default` to `false` and opt the trusted peers back in per-entry:
 
 ```json
-"stagent": {
-  "path": "~/Sites/stagent",
-  "skipPermissions": false
+"peer-a": {
+  "path": "~/code/peer-a",
+  "skipPermissions": true
 }
 ```
 
-Then ensure the project has a `.claude/settings.local.json` allowlist covering what the agent will need.
+## Environment variables
+
+| Var | Effect |
+|---|---|
+| `PARLEY_DIR` | Override the parley state root (default `~/.claude/parley`). Used by tests. |
+| `PARLEY_CONFIG` | Override the `config.json` path. Used by tests. |
+| `PARLEY_FALLBACK` | Override `fallback` for this process. `headless` / `ask`. |
 
 ## Cleanup
 
-Parley accumulates state per session. When Claude Code crashes, gets killed, or you reboot, sessions can leave behind stale manifests. The `parley` skill calls `parley_clean({auto: true})` at the top of every action. The server enforces a 1-hour cooldown so most invocations no-op. To clean on demand: `/parley clean`, or `/parley clean --dry-run` to preview.
+The MCP server auto-cleans stale state on the first `listLiveSessions` call after a 1-hour cooldown. To clean on demand: `/parley clean`, or `/parley clean --dry-run` to preview.
 
 What gets removed:
 
 - Session manifests whose owning process is dead AND last heartbeat was more than 1 hour ago.
 - `by-claude-pid/` sentinels for processes that no longer exist.
 - Headless caches for peers no longer in `peers.json`.
+- Extension manifests where **every** declared peer's path is missing on disk.
 
 What's flagged but never auto-removed:
 
 - `peers.json` entries whose path doesn't exist on disk. You decide whether to `/parley remove` them.
-
-`listSessions()` self-heals on every call: any manifest whose process is dead and heartbeat older than 1 hour is removed inline, so `/parley peers` stays accurate without an explicit clean.
+- Partially-stale extension manifests (some peers live, some gone). That's the extension's job to reconcile.

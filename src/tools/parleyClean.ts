@@ -1,18 +1,17 @@
 import { optionalBool, type ToolDef } from './types.js';
 import { sweep, type SweepResult } from '../cleanup/sweep.js';
-import { readState, touchLastClean } from '../registry/state.js';
+import { touchLastClean } from '../registry/state.js';
 
 const CLEAN_INTERVAL_MS = 60 * 60 * 1000;
 
 interface Args {
   dryRun: boolean;
-  auto: boolean;
 }
 
 export const parleyClean: ToolDef<Args> = {
   name: 'parley_clean',
   description:
-    "Remove stale Parley state on this machine: dead session manifests, dangling PID sentinels, and headless caches for peers that are no longer registered. peers.json entries with missing paths are flagged but never auto-removed. Idempotent. Use dryRun to preview without modifying anything. Use auto=true to no-op when state.json.lastCleanAt is younger than 1 hour (the /parley skill calls auto-clean at the top of every action via this flag).",
+    "Remove stale Parley state on this machine: dead session manifests, dangling PID sentinels, and headless caches for peers that are no longer registered. peers.json entries with missing paths are flagged but never auto-removed. Idempotent. Use dryRun to preview without modifying anything. The MCP server also runs this sweep automatically once per hour, so explicit cleans are only needed for ad-hoc inspection.",
   inputSchema: {
     type: 'object',
     properties: {
@@ -20,41 +19,22 @@ export const parleyClean: ToolDef<Args> = {
         type: 'boolean',
         description: 'If true, report what would be removed without actually removing anything.',
       },
-      auto: {
-        type: 'boolean',
-        description:
-          'If true, skip the sweep when state.json.lastCleanAt is younger than 1 hour. Returns an empty string in that case.',
-      },
     },
     additionalProperties: false,
   },
   parseArgs(raw) {
     return {
       dryRun: optionalBool(raw, 'dryRun') ?? false,
-      auto: optionalBool(raw, 'auto') ?? false,
     };
   },
   async handler(args) {
     const dryRun = args.dryRun;
-    const auto = args.auto;
     const now = new Date();
-
-    if (auto) {
-      const state = await readState();
-      if (state.lastCleanAt) {
-        const last = new Date(state.lastCleanAt).getTime();
-        if (Number.isFinite(last) && now.getTime() - last < CLEAN_INTERVAL_MS) {
-          return '';
-        }
-      }
-    }
 
     const result = await sweep({ dryRun });
     const totalRemoved = countRemoved(result);
 
     if (!dryRun) await touchLastClean(now);
-
-    if (auto && totalRemoved === 0 && result.advisories.length === 0) return '';
 
     return formatReport(result, totalRemoved, now);
   },
@@ -65,7 +45,8 @@ function countRemoved(result: SweepResult): number {
     result.removed.sessions.length +
     result.removed.sentinels.length +
     result.removed.headless.length +
-    result.removed.projectDirs.length
+    result.removed.projectDirs.length +
+    result.removed.extensions.length
   );
 }
 
@@ -90,6 +71,10 @@ function formatReport(result: SweepResult, totalRemoved: number, now: Date): str
     if (result.removed.projectDirs.length > 0) {
       lines.push(`  • ${result.removed.projectDirs.length} empty project director(ies)`);
       for (const d of result.removed.projectDirs) lines.push(`      ${d}`);
+    }
+    if (result.removed.extensions.length > 0) {
+      lines.push(`  • ${result.removed.extensions.length} stale extension manifest(s)`);
+      for (const e of result.removed.extensions) lines.push(`      ${e}`);
     }
   }
 

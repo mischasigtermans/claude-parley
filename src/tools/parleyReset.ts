@@ -1,5 +1,6 @@
 import { requireString, type ToolDef } from './types.js';
 import { clearHeadless } from '../registry/headless.js';
+import { canonicalAlias } from '../routing/router.js';
 
 interface Args {
   alias: string;
@@ -21,7 +22,8 @@ export const parleyReset: ToolDef<Args> = {
   },
   async handler(args, ctx) {
     const projectId = await ctx.getProjectId();
-    const cleared = await clearHeadless(projectId, args.alias);
+    const alias = await canonicalAlias(args.alias);
+    const cleared = await clearHeadless(projectId, alias);
     return cleared
       ? `Cleared cached headless session for "${args.alias}" in this project. Next ask will spawn fresh.`
       : `No cached headless session for "${args.alias}" in this project.`;

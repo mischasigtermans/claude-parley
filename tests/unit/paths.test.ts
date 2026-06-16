@@ -24,12 +24,12 @@ describe('paths', () => {
 
   it('builds project-scoped headless, log, and lock paths correctly', () => {
     const proj = 'proj1234abcd';
-    expect(paths.headlessFor(proj, 'lawyer')).toBe(
-      join(t.tmp.root, 'headless', proj, 'lawyer.json'),
+    expect(paths.headlessFor(proj, 'peer-a')).toBe(
+      join(t.tmp.root, 'headless', proj, 'peer-a.json'),
     );
-    expect(paths.logFor(proj, 'lawyer')).toBe(join(t.tmp.root, 'logs', proj, 'lawyer.md'));
-    expect(paths.headlessLockFor(proj, 'lawyer')).toBe(
-      join(t.tmp.root, 'locks', `${proj}-lawyer.lock`),
+    expect(paths.logFor(proj, 'peer-a')).toBe(join(t.tmp.root, 'logs', proj, 'peer-a.md'));
+    expect(paths.headlessLockFor(proj, 'peer-a')).toBe(
+      join(t.tmp.root, 'locks', `${proj}-peer-a.lock`),
     );
     expect(paths.headlessProjectDir(proj)).toBe(join(t.tmp.root, 'headless', proj));
     expect(paths.logsProjectDir(proj)).toBe(join(t.tmp.root, 'logs', proj));

@@ -22,12 +22,18 @@ describe('peers registry', () => {
     expect(file.peers).toEqual({});
   });
 
-  it('upsertPeer persists to peers.json', async () => {
-    await upsertPeer('lawyer', { path: '/abs/lawyer' });
+  it('upsertPeer persists to peers.json without forcing skipPermissions', async () => {
+    await upsertPeer('peer-a', { path: '/abs/peer-a' });
     const raw = await readFile(paths.peersFile, 'utf8');
     const parsed = JSON.parse(raw);
-    expect(parsed.peers.lawyer.path).toBe('/abs/lawyer');
-    expect(parsed.peers.lawyer.skipPermissions).toBe(true);
+    expect(parsed.peers['peer-a'].path).toBe('/abs/peer-a');
+    expect(parsed.peers['peer-a'].skipPermissions).toBeUndefined();
+  });
+
+  it('upsertPeer preserves explicit skipPermissions=true', async () => {
+    await upsertPeer('trusted', { path: '/abs/trusted', skipPermissions: true });
+    const file = await readPeers();
+    expect(file.peers.trusted.skipPermissions).toBe(true);
   });
 
   it('upsertPeer expands ~ to home', async () => {
@@ -61,9 +67,9 @@ describe('peers registry', () => {
   });
 
   it('upsertPeer leaves type undefined when not provided', async () => {
-    await upsertPeer('lawyer', { path: '/abs/lawyer' });
+    await upsertPeer('peer-a', { path: '/abs/peer-a' });
     const file = await readPeers();
-    expect(file.peers.lawyer.type).toBeUndefined();
+    expect(file.peers['peer-a'].type).toBeUndefined();
   });
 
   it('readPeers ignores a stray top-level `defaults` block (back-compat)', async () => {
@@ -72,18 +78,18 @@ describe('peers registry', () => {
       paths.peersFile,
       JSON.stringify({
         defaults: { model: 'sonnet' },
-        peers: { lawyer: { path: '/abs/lawyer' } },
+        peers: { 'peer-a': { path: '/abs/peer-a' } },
       }),
     );
     const file = await readPeers();
     expect(file).not.toHaveProperty('defaults');
-    expect(file.peers.lawyer.path).toBe('/abs/lawyer');
+    expect(file.peers['peer-a'].path).toBe('/abs/peer-a');
   });
 });
 
 describe('assertValidAlias / alias path-traversal protection', () => {
   it('accepts simple aliases', () => {
-    for (const ok of ['a', 'lawyer', 'onoma', 'stagent', 'foo_bar', 'foo-bar', 'a1', '_dev']) {
+    for (const ok of ['a', 'peer-a', 'peer-b', 'peer-c', 'foo_bar', 'foo-bar', 'a1', '_dev']) {
       // Underscore-leading is rejected; exclude that case
       if (/^[a-zA-Z0-9]/.test(ok)) {
         expect(() => assertValidAlias(ok)).not.toThrow();

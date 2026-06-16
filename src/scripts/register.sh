@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
-# register.sh — Register this Claude Code session as a Parley peer.
+# register.sh: Register this Claude Code session as a Parley peer.
 # Called by SessionStart hook. Each Claude process gets a fresh session ID;
 # multiple Claude windows opened in the same project are independent peers.
 # Outputs the 6-char parley session ID on stdout.
 set -euo pipefail
+
+# Headless `claude -p` spawns (parley_ask) inherit this flag from the driver.
+# They are transient queries, not live windows, so they must not register.
+[ -n "${PARLEY_SUPPRESS_REGISTER:-}" ] && exit 0
 
 command -v jq >/dev/null 2>&1 || {
   echo "parley: jq is required (brew install jq / apt install jq)" >&2
@@ -83,9 +87,18 @@ if [ -z "$SESSION_ID" ]; then
 fi
 mkdir -p "$SESSION_DIR/inbox" "$SESSION_DIR/outbox"
 
-# Capture Claude Code's full session UUID if exposed via the env file.
+# Capture Claude Code's full session UUID. Preferred source is the SessionStart
+# hook JSON payload on stdin (Claude Code 2.x sends `{session_id, transcript_path,
+# cwd, hook_event_name, source}`). Fall back to CLAUDE_ENV_FILE for older versions.
 CLAUDE_SESSION_UUID=""
-if [ -n "${CLAUDE_ENV_FILE:-}" ] && [ -f "$CLAUDE_ENV_FILE" ]; then
+HOOK_STDIN=""
+if [ ! -t 0 ]; then
+  HOOK_STDIN="$(cat 2>/dev/null || true)"
+fi
+if [ -n "$HOOK_STDIN" ]; then
+  CLAUDE_SESSION_UUID="$(printf '%s' "$HOOK_STDIN" | jq -r 'select(type == "object") | .session_id // empty' 2>/dev/null || true)"
+fi
+if [ -z "$CLAUDE_SESSION_UUID" ] && [ -n "${CLAUDE_ENV_FILE:-}" ] && [ -f "$CLAUDE_ENV_FILE" ]; then
   CLAUDE_SESSION_UUID="$(grep -E '^(CLAUDE_SESSION_ID|SESSION_ID)=' "$CLAUDE_ENV_FILE" | head -1 | cut -d= -f2- || true)"
 fi
 

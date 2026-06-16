@@ -4,6 +4,7 @@ import {
   PeersFile,
   readPeers,
 } from '../registry/peers.js';
+import { readExtensions } from '../registry/extensions.js';
 import {
   findListeningByPath,
   listLiveSessions,
@@ -14,11 +15,21 @@ import { readHeadless, writeHeadless, HeadlessRecord } from '../registry/headles
 import { withLock } from '../registry/locks.js';
 import { paths, expandHome, type ProjectId } from '../registry/paths.js';
 import { getClaudeDriver } from '../drivers/claude.js';
+import { readParleyConfig, type Fallback } from '../config.js';
 import { sendMessage, waitForMessage, findInboxStatus } from './queue.js';
 import { appendTurn } from './transcript.js';
 import { errorMessage } from '../util/errors.js';
 
 export type Tier = 'live' | 'headless-resumed' | 'headless-fresh';
+
+const ASK_TIMEOUT_DEFAULT_MS = 30 * 60 * 1000;
+
+function askTimeoutMs(): number {
+  const raw = process.env.PARLEY_ASK_TIMEOUT_MS;
+  if (!raw) return ASK_TIMEOUT_DEFAULT_MS;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : ASK_TIMEOUT_DEFAULT_MS;
+}
 
 export interface AskInput {
   peerRef: string;
@@ -41,6 +52,7 @@ Be direct. Use the minimum number of tool calls needed to answer accurately. Do 
 `;
 
 export async function routeAsk(input: AskInput): Promise<AskResult> {
+  const effectiveTimeoutMs = input.timeoutMs ?? askTimeoutMs();
   const peersFile = await readPeers();
   const peer = await resolvePeer(input.peerRef, peersFile);
   if (!peer) {
@@ -55,11 +67,32 @@ export async function routeAsk(input: AskInput): Promise<AskResult> {
     );
   }
 
-  const live = await resolveListening(peer.alias, peer.config, peer.sessionId, input.fromSessionId);
+  // Load the asker's cached session pointer for this peer up front. Used to:
+  //   1. Pick the matching live listener when multiple are present (B3).
+  //   2. Write the listener's claudeSessionId back into the cache after a live
+  //      answer succeeds, so the next ask (live or headless) can --resume the
+  //      same thread (B2).
+  const pointer = await readHeadless(input.fromProjectId, peer.alias);
+
+  const live = await resolveListening(
+    peer.alias,
+    peer.config,
+    peer.sessionId,
+    input.fromSessionId,
+    pointer?.claudeSessionId,
+  );
   switch (live.kind) {
     case 'single': {
-      const answer = await routeLive({ ...input, target: live.session });
+      const answer = await routeLive({ ...input, target: live.session, timeoutMs: effectiveTimeoutMs });
       await appendTurn(input.fromProjectId, peer.alias, input.fromProject, input.question, answer, 'live');
+      if (live.session.claudeSessionId) {
+        await updatePointerToLive({
+          pointer,
+          peer,
+          fromProjectId: input.fromProjectId,
+          claudeSessionId: live.session.claudeSessionId,
+        });
+      }
       return { alias: peer.alias, tier: 'live', answer };
     }
     case 'multiple': {
@@ -82,6 +115,15 @@ export async function routeAsk(input: AskInput): Promise<AskResult> {
       live satisfies never;
   }
 
+  // No listener (or 'none' fallthrough from switch). Resolve fallback policy.
+  const config = await readParleyConfig();
+  const fallback: Fallback = config.fallback;
+
+  if (fallback === 'ask') {
+    throw new Error(noListenerMessage(peer.alias));
+  }
+
+  // fallback === 'headless' (default): spawn `claude -p` with --resume from pointer.
   const cwd = expandHome(peer.config.path);
   const driver = getClaudeDriver();
 
@@ -89,9 +131,12 @@ export async function routeAsk(input: AskInput): Promise<AskResult> {
 
   const model = peer.config.model;
   const mcpServers = peer.config.mcpServers ?? {};
-  const skipPermissions = peer.config.skipPermissions ?? true;
+  // Per-peer `skipPermissions` wins; otherwise fall back to config.skipDefault.
+  const skipPermissions = peer.config.skipPermissions ?? config.skipDefault;
 
   return withLock(paths.headlessLockFor(input.fromProjectId, peer.alias), async () => {
+    // Use the pointer we already loaded above; re-read under the lock to
+    // pick up any writes that landed between the initial read and now.
     const cached = await readHeadless(input.fromProjectId, peer.alias);
     let tier: Tier;
     let result;
@@ -99,7 +144,7 @@ export async function routeAsk(input: AskInput): Promise<AskResult> {
     const baseSpawn = {
       cwd,
       prompt: wrappedPrompt,
-      timeoutMs: input.timeoutMs,
+      timeoutMs: effectiveTimeoutMs,
       skipPermissions,
       model,
       mcpServers,
@@ -130,11 +175,81 @@ export async function routeAsk(input: AskInput): Promise<AskResult> {
       createdAt: cached?.createdAt ?? now,
       lastUsedAt: now,
       turnCount: (cached?.turnCount ?? 0) + 1,
+      origin: 'headless',
     };
     await writeHeadless(next);
     await appendTurn(input.fromProjectId, peer.alias, input.fromProject, input.question, result.output, tier);
     return { alias: peer.alias, tier, answer: result.output };
   });
+}
+
+/**
+ * Update the asker's session pointer to reflect the most recent live response.
+ * The next ask (live or headless) can --resume the same claude session,
+ * keeping the conversation continuous across transports.
+ */
+async function updatePointerToLive(opts: {
+  pointer: HeadlessRecord | null;
+  peer: { alias: string; config: PeerConfig };
+  fromProjectId: ProjectId;
+  claudeSessionId: string;
+}): Promise<void> {
+  // Single-user assumption: not lock-guarded. Two overlapping live replies
+  // can race on turnCount/claudeSessionId. Acceptable for v0.3.0.
+  const now = new Date().toISOString();
+  const next: HeadlessRecord = {
+    projectId: opts.fromProjectId,
+    alias: opts.peer.alias,
+    claudeSessionId: opts.claudeSessionId,
+    cwd: expandHome(opts.peer.config.path),
+    createdAt: opts.pointer?.createdAt ?? now,
+    lastUsedAt: now,
+    turnCount: (opts.pointer?.turnCount ?? 0) + 1,
+    origin: 'live',
+  };
+  await writeHeadless(next);
+}
+
+function noListenerMessage(alias: string): string {
+  return [
+    `parley: no live listener for "${alias}" and fallback="ask". Background would draw from your Agent SDK credit pool (separate from interactive subscription).`,
+    `Options:`,
+    `  • Open the peer and run /parley listen, then retry to route live (zero SDK credit).`,
+    `  • Spawn headless this once: set fallback="headless" in ~/.claude/parley/config.json or PARLEY_FALLBACK=headless.`,
+  ].join('\n');
+}
+
+function canonicalExtensionAlias(
+  extensions: { alias: string; path: string }[],
+  extPeer: { alias: string; path: string },
+): string {
+  const first = extensions.find((p) => expandHome(p.path) === expandHome(extPeer.path));
+  return first?.alias ?? extPeer.alias;
+}
+
+/**
+ * Resolve a peer ref to the canonical alias used to key headless state
+ * (cache, transcript, lock). Extension peers expose multiple aliases for one
+ * path; all of them must map to a single key so the conversation stays
+ * continuous regardless of which alias the caller typed. Falls back to the
+ * typed alias when the ref doesn't match a registered peer.
+ */
+export async function canonicalAlias(ref: string): Promise<string> {
+  const colonIdx = ref.indexOf(':');
+  const aliasPart = colonIdx >= 0 ? ref.slice(0, colonIdx) : ref;
+
+  const direct = findPeerInFile(aliasPart, await readPeers());
+  if (direct) return direct.alias;
+
+  const extensions = await readExtensions();
+  const extPeer = extensions.find((p) => p.alias === aliasPart);
+  if (extPeer) return canonicalExtensionAlias(extensions, extPeer);
+
+  const live = await listLiveSessions();
+  const match = live.find(
+    (s) => s.alias === aliasPart || s.projectName === aliasPart || s.projectPath === expandHome(aliasPart),
+  );
+  return match?.alias ?? aliasPart;
 }
 
 async function resolvePeer(
@@ -147,6 +262,27 @@ async function resolvePeer(
 
   const direct = findPeerInFile(aliasPart, peersFile);
   if (direct) return { ...direct, sessionId: sessionId || undefined };
+
+  // Check extension-provided peers.
+  // User-curated peers.json wins above; extensions can't shadow.
+  const extensions = await readExtensions();
+  const extPeer = extensions.find((p) => p.alias === aliasPart);
+  if (extPeer) {
+    return {
+      // Key by the canonical alias (first manifest entry sharing this path), so
+      // asking the same peer via any of its aliases resumes one session.
+      alias: canonicalExtensionAlias(extensions, extPeer),
+      config: {
+        path: extPeer.path,
+        description: extPeer.description,
+        type: extPeer.type,
+        model: extPeer.model,
+        mcpServers: extPeer.mcpServers,
+        skipPermissions: extPeer.skipPermissions,
+      },
+      sessionId: sessionId || undefined,
+    };
+  }
 
   const live = await listLiveSessions();
   const match = live.find(
@@ -174,6 +310,7 @@ async function resolveListening(
   config: PeerConfig,
   sessionId: string | undefined,
   fromSessionId: string,
+  preferredClaudeSessionId: string | null | undefined,
 ): Promise<ListeningResolution> {
   const target = expandHome(config.path);
   if (sessionId) {
@@ -191,6 +328,14 @@ async function resolveListening(
   );
   if (sessions.length === 0) return { kind: 'none' };
   if (sessions.length === 1) return { kind: 'single', session: sessions[0] };
+
+  // Multiple listeners. Prefer the one whose claudeSessionId matches the
+  // asker's cached pointer (a thread continuation). Falls back to the
+  // disambiguation error if none match.
+  if (preferredClaudeSessionId) {
+    const matched = sessions.find((s) => s.claudeSessionId === preferredClaudeSessionId);
+    if (matched) return { kind: 'single', session: matched };
+  }
   return { kind: 'multiple', sessions };
 }
 
@@ -199,7 +344,7 @@ async function routeLive(opts: {
   target: SessionManifest;
   fromSessionId: string;
   fromProject: string;
-  timeoutMs?: number;
+  timeoutMs: number;
 }): Promise<string> {
   const msgId = await sendMessage({
     fromSessionId: opts.fromSessionId,
@@ -211,7 +356,7 @@ async function routeLive(opts: {
   const reply = await waitForMessage(
     opts.fromSessionId,
     (m) => m.type === 'response' && m.inReplyTo === msgId,
-    { timeoutMs: opts.timeoutMs ?? 120_000 },
+    { timeoutMs: opts.timeoutMs },
   );
   if (!reply) {
     const status = await findInboxStatus(opts.target.sessionId, msgId);

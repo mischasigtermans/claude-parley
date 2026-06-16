@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
-# cleanup.sh — Tear down this session's Parley registration on SessionEnd.
+# cleanup.sh: Tear down this session's Parley registration on SessionEnd.
 # Notifies any peers who've connected (sent us a ping) so they can clear their
 # view of us. Removes the session directory.
 set -euo pipefail
+
+# Headless spawns never registered (see register.sh), so they have nothing to
+# tear down. Skip to avoid touching another session's state.
+[ -n "${PARLEY_SUPPRESS_REGISTER:-}" ] && exit 0
 
 command -v jq >/dev/null 2>&1 || exit 0
 

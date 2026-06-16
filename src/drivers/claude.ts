@@ -100,9 +100,10 @@ export function buildClaudeArgs(opts: SpawnOptions): string[] {
   ];
   if (opts.sessionId) args.push('--resume', opts.sessionId);
   if (opts.model) args.push('--model', opts.model);
-  if (opts.skipPermissions ?? true) args.push('--dangerously-skip-permissions');
-  const mcpConfigJson = JSON.stringify({ mcpServers: opts.mcpServers ?? {} });
-  args.push('--strict-mcp-config', '--mcp-config', mcpConfigJson);
+  if (opts.skipPermissions) args.push('--dangerously-skip-permissions');
+  if (opts.mcpServers && Object.keys(opts.mcpServers).length > 0) {
+    args.push('--mcp-config', JSON.stringify({ mcpServers: opts.mcpServers }));
+  }
   return args;
 }
 
@@ -181,6 +182,9 @@ function runClaude(command: string, args: string[], opts: RunOptions): Promise<S
     const child = spawn(command, args, {
       cwd: opts.cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
+      // Stop the spawned `claude -p` from registering itself as a live peer via
+      // parley's SessionStart hook. Headless asks are transient, not windows.
+      env: { ...process.env, PARLEY_SUPPRESS_REGISTER: '1' },
     });
     opts.track?.add(child);
 

@@ -1,5 +1,6 @@
 import { optionalNumber, requireString, type ToolDef } from './types.js';
 import { readTranscript } from '../routing/transcript.js';
+import { canonicalAlias } from '../routing/router.js';
 
 interface Args {
   alias: string;
@@ -26,7 +27,8 @@ export const parleyLog: ToolDef<Args> = {
   },
   async handler(args, ctx) {
     const fromProjectId = await ctx.getProjectId();
-    const content = await readTranscript(fromProjectId, args.alias, args.tail);
+    const alias = await canonicalAlias(args.alias);
+    const content = await readTranscript(fromProjectId, alias, args.tail);
     return content || `No transcript yet for "${args.alias}" from this project.`;
   },
 };

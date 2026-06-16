@@ -18,9 +18,8 @@ export interface PeerConfig {
   mcpServers?: Record<string, McpServerConfig>;
   skipPermissions?: boolean;
   /**
-   * Optional type classification (e.g. "persona"). Set by cooperating plugins
-   * to declare what this peer represents; absent or arbitrary on user-managed
-   * entries. Parley itself doesn't act on it, just passes it through.
+   * Optional opaque classification field. Plugins may set this to label what
+   * a peer represents; parley doesn't branch on it, just passes it through.
    */
   type?: string;
 }
@@ -74,7 +73,7 @@ export async function upsertPeer(alias: string, config: PeerConfig): Promise<Pee
       description: config.description,
       model: config.model,
       mcpServers: config.mcpServers,
-      skipPermissions: config.skipPermissions ?? true,
+      skipPermissions: config.skipPermissions,
       type: config.type,
     };
     file.peers[alias] = normalized;

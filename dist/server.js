@@ -1,3 +1,4 @@
+import { createRequire } from "node:module";
 var __create = Object.create;
 var __getProtoOf = Object.getPrototypeOf;
 var __defProp = Object.defineProperty;
@@ -42,6 +43,8 @@ var __export = (target, all) => {
       set: __exportSetter.bind(all, name)
     });
 };
+var __esm = (fn, res) => () => (fn && (res = fn(fn = 0)), res);
+var __require = /* @__PURE__ */ createRequire(import.meta.url);
 
 // node_modules/ajv/dist/compile/codegen/code.js
 var require_code = __commonJS((exports) => {
@@ -6602,6 +6605,667 @@ var require_dist = __commonJS((exports, module) => {
   exports.default = formatsPlugin;
 });
 
+// src/registry/paths.ts
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+function parleyDir() {
+  return process.env.PARLEY_DIR ?? join(homedir(), ".claude", "parley");
+}
+async function gitRemote(cwd) {
+  try {
+    const { stdout } = await exec("git", ["config", "--get", "remote.origin.url"], { cwd });
+    const url = stdout.trim();
+    return url.length > 0 ? url : null;
+  } catch {
+    return null;
+  }
+}
+function expandHome(path) {
+  if (path.startsWith("~")) {
+    return resolve(homedir() + path.slice(1));
+  }
+  return resolve(path);
+}
+var exec, paths;
+var init_paths = __esm(() => {
+  exec = promisify(execFile);
+  paths = {
+    get root() {
+      return parleyDir();
+    },
+    get peersFile() {
+      return join(parleyDir(), "peers.json");
+    },
+    get stateFile() {
+      return join(parleyDir(), "state.json");
+    },
+    get sessionsDir() {
+      return join(parleyDir(), "sessions");
+    },
+    get headlessDir() {
+      return join(parleyDir(), "headless");
+    },
+    get extensionsDir() {
+      return join(parleyDir(), "extensions");
+    },
+    get logsDir() {
+      return join(parleyDir(), "logs");
+    },
+    get locksDir() {
+      return join(parleyDir(), "locks");
+    },
+    get byClaudePidDir() {
+      return join(parleyDir(), "by-claude-pid");
+    },
+    byClaudePid: (pid) => join(parleyDir(), "by-claude-pid", `${pid}.session`),
+    sessionDir: (sid) => join(parleyDir(), "sessions", sid),
+    sessionManifest: (sid) => join(parleyDir(), "sessions", sid, "manifest.json"),
+    sessionInbox: (sid) => join(parleyDir(), "sessions", sid, "inbox"),
+    sessionInboxInProgress: (sid) => join(parleyDir(), "sessions", sid, "inbox", "in-progress"),
+    sessionInboxRead: (sid) => join(parleyDir(), "sessions", sid, "inbox", "read"),
+    sessionOutbox: (sid) => join(parleyDir(), "sessions", sid, "outbox"),
+    headlessProjectDir: (projectId) => join(parleyDir(), "headless", projectId),
+    headlessFor: (projectId, alias) => join(parleyDir(), "headless", projectId, `${alias}.json`),
+    headlessLockFor: (projectId, alias) => join(parleyDir(), "locks", `${projectId}-${alias}.lock`),
+    logsProjectDir: (projectId) => join(parleyDir(), "logs", projectId),
+    logFor: (projectId, alias) => join(parleyDir(), "logs", projectId, `${alias}.md`),
+    async projectId(cwd) {
+      const remote = await gitRemote(cwd);
+      const source = remote ?? cwd;
+      return createHash("sha1").update(source).digest("hex").slice(0, 12);
+    }
+  };
+});
+
+// src/util/errors.ts
+function isErrnoException(e) {
+  return e instanceof Error && typeof e.code === "string";
+}
+function errorMessage(e) {
+  if (e instanceof Error)
+    return e.message;
+  if (typeof e === "string")
+    return e;
+  try {
+    return JSON.stringify(e);
+  } catch {
+    return String(e);
+  }
+}
+
+// src/registry/locks.ts
+import { mkdir, readFile, writeFile, unlink, rename } from "node:fs/promises";
+import { dirname } from "node:path";
+async function withLock(lockPath, fn, opts = {}) {
+  const timeoutMs = opts.timeoutMs ?? 30000;
+  const pollMs = opts.pollMs ?? 100;
+  const deadline = Date.now() + timeoutMs;
+  await mkdir(dirname(lockPath), { recursive: true });
+  while (true) {
+    try {
+      await writeFile(lockPath, String(process.pid), { flag: "wx" });
+      break;
+    } catch (err) {
+      if (!isErrnoException(err) || err.code !== "EEXIST")
+        throw err;
+      if (await tryReclaimStaleLock(lockPath))
+        continue;
+      if (Date.now() > deadline)
+        throw new LockTimeoutError(lockPath);
+      await sleep(pollMs);
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    await unlink(lockPath).catch(() => {});
+  }
+}
+async function tryReclaimStaleLock(lockPath) {
+  let pid;
+  try {
+    const contents = (await readFile(lockPath, "utf8")).trim();
+    pid = parseInt(contents, 10);
+    if (!Number.isFinite(pid) || pid <= 0)
+      return false;
+  } catch {
+    return false;
+  }
+  if (pid === process.pid)
+    return false;
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch {
+    await unlink(lockPath).catch(() => {});
+    return true;
+  }
+}
+async function atomicWriteJSON(path, data) {
+  await mkdir(dirname(path), { recursive: true });
+  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  await writeFile(tmp, JSON.stringify(data, null, 2));
+  await rename(tmp, path);
+}
+function sleep(ms) {
+  return new Promise((resolve2) => setTimeout(resolve2, ms));
+}
+var LockTimeoutError;
+var init_locks = __esm(() => {
+  LockTimeoutError = class LockTimeoutError extends Error {
+    constructor(lockPath) {
+      super(`parley: timed out acquiring lock at ${lockPath}`);
+    }
+  };
+});
+
+// src/registry/peers.ts
+import { readFile as readFile2, mkdir as mkdir2 } from "node:fs/promises";
+function assertValidAlias(alias) {
+  if (typeof alias !== "string" || !ALIAS_PATTERN.test(alias)) {
+    throw new InvalidAliasError(alias);
+  }
+}
+async function readPeers() {
+  try {
+    const raw = await readFile2(paths.peersFile, "utf8");
+    const parsed = JSON.parse(raw);
+    return { peers: parsed.peers ?? {} };
+  } catch (err) {
+    if (isErrnoException(err) && err.code === "ENOENT") {
+      return { ...empty, peers: { ...empty.peers } };
+    }
+    throw err;
+  }
+}
+async function writePeers(file) {
+  await mkdir2(paths.root, { recursive: true });
+  await atomicWriteJSON(paths.peersFile, file);
+}
+async function upsertPeer(alias, config2) {
+  assertValidAlias(alias);
+  return withLock(`${paths.peersFile}.lock`, async () => {
+    const file = await readPeers();
+    const normalized = {
+      path: expandHome(config2.path),
+      description: config2.description,
+      model: config2.model,
+      mcpServers: config2.mcpServers,
+      skipPermissions: config2.skipPermissions,
+      type: config2.type
+    };
+    file.peers[alias] = normalized;
+    await writePeers(file);
+    return normalized;
+  });
+}
+async function removePeer(alias) {
+  return withLock(`${paths.peersFile}.lock`, async () => {
+    const file = await readPeers();
+    if (!(alias in file.peers))
+      return false;
+    delete file.peers[alias];
+    await writePeers(file);
+    return true;
+  });
+}
+function findPeerInFile(aliasOrPath, file) {
+  if (file.peers[aliasOrPath]) {
+    return { alias: aliasOrPath, config: file.peers[aliasOrPath] };
+  }
+  const expanded = expandHome(aliasOrPath);
+  for (const [alias, cfg] of Object.entries(file.peers)) {
+    if (expandHome(cfg.path) === expanded)
+      return { alias, config: cfg };
+  }
+  return null;
+}
+var empty, ALIAS_PATTERN, InvalidAliasError;
+var init_peers = __esm(() => {
+  init_paths();
+  init_locks();
+  empty = { peers: {} };
+  ALIAS_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/;
+  InvalidAliasError = class InvalidAliasError extends Error {
+    constructor(alias) {
+      super(`parley: invalid alias "${alias}". Aliases must start with a letter or digit and contain only letters, digits, underscores, or hyphens (max 64 chars).`);
+    }
+  };
+});
+
+// src/registry/extensions.ts
+import { readdir, readFile as readFile3 } from "node:fs/promises";
+import { join as join2 } from "node:path";
+async function readExtensions() {
+  let entries;
+  try {
+    entries = await readdir(paths.extensionsDir);
+  } catch (err) {
+    if (isErrnoException(err) && err.code === "ENOENT")
+      return [];
+    throw err;
+  }
+  const out = [];
+  for (const file of entries) {
+    if (!file.endsWith(".json"))
+      continue;
+    const manifestPath = join2(paths.extensionsDir, file);
+    let manifest;
+    try {
+      const raw = await readFile3(manifestPath, "utf8");
+      manifest = JSON.parse(raw);
+    } catch {
+      continue;
+    }
+    const extName = typeof manifest.name === "string" && manifest.name.length > 0 ? manifest.name : file.replace(/\.json$/, "");
+    if (!Array.isArray(manifest.peers))
+      continue;
+    for (const p of manifest.peers) {
+      if (typeof p?.alias !== "string" || typeof p?.path !== "string")
+        continue;
+      try {
+        assertValidAlias(p.alias);
+      } catch (err) {
+        if (err instanceof InvalidAliasError) {
+          process.stderr.write(`parley: extension "${extName}" declared invalid alias "${p.alias}", skipped
+`);
+          continue;
+        }
+        throw err;
+      }
+      out.push({
+        alias: p.alias,
+        path: p.path,
+        description: typeof p.description === "string" ? p.description : undefined,
+        type: typeof p.type === "string" ? p.type : undefined,
+        model: typeof p.model === "string" ? p.model : undefined,
+        mcpServers: isPlainObject3(p.mcpServers) ? p.mcpServers : undefined,
+        skipPermissions: typeof p.skipPermissions === "boolean" ? p.skipPermissions : undefined,
+        extension: extName,
+        manifestPath
+      });
+    }
+  }
+  return out;
+}
+function isPlainObject3(v) {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+var init_extensions = __esm(() => {
+  init_paths();
+  init_peers();
+});
+
+// src/registry/state.ts
+import { readFile as readFile4 } from "node:fs/promises";
+async function readState() {
+  let raw;
+  try {
+    raw = await readFile4(paths.stateFile, "utf8");
+  } catch (err) {
+    if (isErrnoException(err) && err.code === "ENOENT")
+      return {};
+    throw err;
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    const lastCleanAt = typeof parsed.lastCleanAt === "string" ? parsed.lastCleanAt : undefined;
+    return { lastCleanAt };
+  } catch {
+    return {};
+  }
+}
+async function writeState(state) {
+  await atomicWriteJSON(paths.stateFile, state);
+}
+async function touchLastClean(now = new Date) {
+  const state = await readState();
+  state.lastCleanAt = now.toISOString();
+  await writeState(state);
+}
+var init_state = __esm(() => {
+  init_paths();
+  init_locks();
+});
+
+// src/cleanup/sweep.ts
+var exports_sweep = {};
+__export(exports_sweep, {
+  sweep: () => sweep
+});
+import { readdir as readdir2, rm, stat, unlink as unlink2 } from "node:fs/promises";
+import { join as join3 } from "node:path";
+async function sweep(opts = {}) {
+  const dryRun = opts.dryRun === true;
+  const removed = {
+    sessions: [],
+    sentinels: [],
+    headless: [],
+    projectDirs: [],
+    extensions: []
+  };
+  const advisories = [];
+  const peersFile = await readPeers();
+  const extensions = await readExtensions();
+  const peerAliases = new Set([
+    ...Object.keys(peersFile.peers),
+    ...extensions.map((e) => e.alias)
+  ]);
+  await sweepSessions(removed, dryRun);
+  await sweepSentinels(removed, dryRun);
+  await sweepHeadless(peerAliases, removed, dryRun);
+  await sweepEmptyProjectDirs(removed, dryRun);
+  await sweepStaleExtensions(removed, dryRun);
+  await collectAdvisories(peersFile.peers, advisories);
+  return { removed, advisories, dryRun };
+}
+async function sweepSessions(removed, dryRun) {
+  let entries;
+  try {
+    entries = await readdir2(paths.sessionsDir);
+  } catch (err) {
+    if (isErrnoException(err) && err.code === "ENOENT")
+      return;
+    throw err;
+  }
+  const now = Date.now();
+  for (const sid of entries) {
+    const manifest = await readManifest(sid);
+    if (!manifest) {
+      if (!dryRun)
+        await rm(paths.sessionDir(sid), { recursive: true, force: true });
+      removed.sessions.push(sid);
+      continue;
+    }
+    const age = now - new Date(manifest.lastHeartbeat).getTime();
+    const stale = age > HEARTBEAT_DEAD_MS;
+    const processAlive = isProcessAlive(manifest.pid);
+    const pathGone = !await pathExists(manifest.projectPath);
+    if (stale && (!processAlive || pathGone)) {
+      if (!dryRun)
+        await rm(paths.sessionDir(sid), { recursive: true, force: true });
+      removed.sessions.push(sid);
+    }
+  }
+}
+async function sweepSentinels(removed, dryRun) {
+  let entries;
+  try {
+    entries = await readdir2(paths.byClaudePidDir);
+  } catch (err) {
+    if (isErrnoException(err) && err.code === "ENOENT")
+      return;
+    throw err;
+  }
+  for (const file of entries) {
+    if (!file.endsWith(".session"))
+      continue;
+    const pid = parseInt(file.slice(0, -".session".length), 10);
+    if (!Number.isFinite(pid) || isProcessAlive(pid))
+      continue;
+    if (!dryRun)
+      await unlink2(join3(paths.byClaudePidDir, file)).catch(() => {});
+    removed.sentinels.push(file);
+  }
+}
+async function sweepHeadless(peerAliases, removed, dryRun) {
+  let projectDirs;
+  try {
+    projectDirs = await readdir2(paths.headlessDir);
+  } catch (err) {
+    if (isErrnoException(err) && err.code === "ENOENT")
+      return;
+    throw err;
+  }
+  for (const projectId of projectDirs) {
+    const projectDir = paths.headlessProjectDir(projectId);
+    let entries;
+    try {
+      const st = await stat(projectDir);
+      if (!st.isDirectory())
+        continue;
+      entries = await readdir2(projectDir);
+    } catch (err) {
+      if (isErrnoException(err) && err.code === "ENOENT")
+        continue;
+      throw err;
+    }
+    for (const file of entries) {
+      if (!file.endsWith(".json"))
+        continue;
+      const alias = file.slice(0, -".json".length);
+      if (peerAliases.has(alias))
+        continue;
+      if (!dryRun)
+        await unlink2(join3(projectDir, file)).catch(() => {});
+      removed.headless.push(`${projectId}/${alias}`);
+    }
+  }
+}
+async function sweepEmptyProjectDirs(removed, dryRun) {
+  for (const root of [paths.headlessDir, paths.logsDir]) {
+    let entries;
+    try {
+      entries = await readdir2(root);
+    } catch (err) {
+      if (isErrnoException(err) && err.code === "ENOENT")
+        continue;
+      throw err;
+    }
+    for (const name of entries) {
+      const dir = join3(root, name);
+      try {
+        const st = await stat(dir);
+        if (!st.isDirectory())
+          continue;
+        const contents = await readdir2(dir);
+        if (contents.length > 0)
+          continue;
+        if (!dryRun)
+          await rm(dir, { recursive: true, force: true });
+        removed.projectDirs.push(`${root.endsWith("/headless") ? "headless" : "logs"}/${name}`);
+      } catch (err) {
+        if (isErrnoException(err) && err.code === "ENOENT")
+          continue;
+        throw err;
+      }
+    }
+  }
+}
+async function sweepStaleExtensions(removed, dryRun) {
+  let entries;
+  try {
+    entries = await readdir2(paths.extensionsDir);
+  } catch (err) {
+    if (isErrnoException(err) && err.code === "ENOENT")
+      return;
+    throw err;
+  }
+  for (const file of entries) {
+    if (!file.endsWith(".json"))
+      continue;
+    const manifestPath = join3(paths.extensionsDir, file);
+    let manifest;
+    try {
+      const raw = await import("node:fs/promises").then((m) => m.readFile(manifestPath, "utf8"));
+      manifest = JSON.parse(raw);
+    } catch {
+      continue;
+    }
+    if (!Array.isArray(manifest.peers) || manifest.peers.length === 0)
+      continue;
+    let anyAlive = false;
+    for (const p of manifest.peers) {
+      if (typeof p?.path !== "string")
+        continue;
+      if (await pathExists(expandHome(p.path))) {
+        anyAlive = true;
+        break;
+      }
+    }
+    if (anyAlive)
+      continue;
+    if (!dryRun)
+      await unlink2(manifestPath).catch(() => {});
+    removed.extensions.push(file);
+  }
+}
+async function collectAdvisories(peers, advisories) {
+  for (const [alias, cfg] of Object.entries(peers)) {
+    const resolved = expandHome(cfg.path);
+    if (!await pathExists(resolved)) {
+      advisories.push(`peer "${alias}" path ${cfg.path}: directory does not exist (use /parley remove ${alias} if intentional)`);
+    }
+  }
+}
+async function pathExists(p) {
+  try {
+    await stat(p);
+    return true;
+  } catch (err) {
+    if (isErrnoException(err) && err.code === "ENOENT")
+      return false;
+    throw err;
+  }
+}
+var HEARTBEAT_DEAD_MS;
+var init_sweep = __esm(() => {
+  init_paths();
+  init_sessions();
+  init_peers();
+  init_extensions();
+  HEARTBEAT_DEAD_MS = 60 * 60 * 1000;
+});
+
+// src/registry/sessions.ts
+import { readdir as readdir3, readFile as readFile5, mkdir as mkdir3 } from "node:fs/promises";
+function isProcessAlive(pid) {
+  if (!Number.isFinite(pid) || pid <= 0)
+    return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    if (isErrnoException(err) && err.code === "EPERM")
+      return true;
+    return false;
+  }
+}
+async function readManifest(sid) {
+  let raw;
+  try {
+    raw = await readFile5(paths.sessionManifest(sid), "utf8");
+  } catch (err) {
+    if (isErrnoException(err) && err.code === "ENOENT")
+      return null;
+    throw err;
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!Number.isFinite(new Date(parsed.lastHeartbeat).getTime()))
+    return null;
+  return parsed;
+}
+async function writeManifest(manifest) {
+  await mkdir3(paths.sessionDir(manifest.sessionId), { recursive: true });
+  await atomicWriteJSON(paths.sessionManifest(manifest.sessionId), manifest);
+}
+async function updateManifest(sid, patch) {
+  return withLock(`${paths.sessionManifest(sid)}.lock`, async () => {
+    const manifest = await readManifest(sid);
+    if (!manifest)
+      return false;
+    const next = patch(manifest);
+    if (!next)
+      return false;
+    await writeManifest(next);
+    return true;
+  });
+}
+async function touchHeartbeat(sid) {
+  await updateManifest(sid, (m) => ({ ...m, lastHeartbeat: new Date().toISOString() }));
+}
+async function setStatus(sid, status) {
+  const updated = await updateManifest(sid, (m) => ({
+    ...m,
+    status,
+    lastHeartbeat: new Date().toISOString()
+  }));
+  if (!updated) {
+    throw new Error(`parley: cannot set status on session "${sid}" because its manifest is missing. The session may have been cleaned up. Restart Claude Code or run a fresh /parley listen.`);
+  }
+}
+async function listSessions() {
+  let entries;
+  try {
+    entries = await readdir3(paths.sessionsDir);
+  } catch (err) {
+    if (isErrnoException(err) && err.code === "ENOENT")
+      return [];
+    throw err;
+  }
+  const out = [];
+  for (const sid of entries) {
+    const m = await readManifest(sid);
+    if (m)
+      out.push(m);
+  }
+  return out;
+}
+async function listLiveSessions() {
+  await maybeAutoSweep();
+  const sessions = await listSessions();
+  const now = Date.now();
+  return sessions.filter((s) => now - new Date(s.lastHeartbeat).getTime() < STALE_AFTER_MS);
+}
+async function maybeAutoSweep() {
+  if (sweepInFlight)
+    return sweepInFlight;
+  const state = await readState();
+  if (state.lastCleanAt) {
+    const last = new Date(state.lastCleanAt).getTime();
+    if (Number.isFinite(last) && Date.now() - last < AUTO_SWEEP_INTERVAL_MS)
+      return;
+  }
+  sweepInFlight = runAutoSweep().finally(() => {
+    sweepInFlight = null;
+  });
+  return sweepInFlight;
+}
+async function runAutoSweep() {
+  try {
+    const { sweep: sweep2 } = await Promise.resolve().then(() => (init_sweep(), exports_sweep));
+    await sweep2({ dryRun: false });
+    await touchLastClean(new Date);
+  } catch (err) {
+    process.stderr.write(`parley: auto-sweep failed: ${err instanceof Error ? err.message : String(err)}
+`);
+  }
+}
+async function listLiveByPath(projectPath) {
+  const live = await listLiveSessions();
+  return live.filter((s) => s.projectPath === projectPath);
+}
+async function findListeningByPath(projectPath) {
+  const live = await listLiveSessions();
+  return live.filter((s) => s.projectPath === projectPath && s.status === "listening");
+}
+var STALE_AFTER_MS, AUTO_SWEEP_INTERVAL_MS, sweepInFlight = null;
+var init_sessions = __esm(() => {
+  init_paths();
+  init_locks();
+  init_state();
+  STALE_AFTER_MS = 5 * 60 * 1000;
+  AUTO_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
+});
+
 // node_modules/zod/v4/core/core.js
 var _a;
 function $constructor(name, initializer, params) {
@@ -10345,7 +11009,7 @@ function finalize(ctx, schema) {
     result.$schema = "http://json-schema.org/draft-07/schema#";
   } else if (ctx.target === "draft-04") {
     result.$schema = "http://json-schema.org/draft-04/schema#";
-  } else if (ctx.target === "openapi-3.0") {} else {}
+  } else if (ctx.target === "openapi-3.0") {}
   if (ctx.external?.uri) {
     const id = ctx.external.registry.get(schema)?.id;
     if (!id)
@@ -10563,7 +11227,7 @@ var literalProcessor = (schema, ctx, json, _params) => {
     if (val === undefined) {
       if (ctx.unrepresentable === "throw") {
         throw new Error("Literal `undefined` cannot be represented in JSON Schema");
-      } else {}
+      }
     } else if (typeof val === "bigint") {
       if (ctx.unrepresentable === "throw") {
         throw new Error("BigInt literals cannot be represented in JSON Schema");
@@ -14064,98 +14728,13 @@ class StdioServerTransport {
 }
 
 // src/context.ts
+init_paths();
 import { existsSync as existsSync2 } from "node:fs";
 
-// src/registry/paths.ts
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
-import { createHash } from "node:crypto";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-var exec = promisify(execFile);
-function parleyDir() {
-  return process.env.PARLEY_DIR ?? join(homedir(), ".claude", "parley");
-}
-async function gitRemote(cwd) {
-  try {
-    const { stdout } = await exec("git", ["config", "--get", "remote.origin.url"], { cwd });
-    const url = stdout.trim();
-    return url.length > 0 ? url : null;
-  } catch {
-    return null;
-  }
-}
-var paths = {
-  get root() {
-    return parleyDir();
-  },
-  get peersFile() {
-    return join(parleyDir(), "peers.json");
-  },
-  get stateFile() {
-    return join(parleyDir(), "state.json");
-  },
-  get sessionsDir() {
-    return join(parleyDir(), "sessions");
-  },
-  get headlessDir() {
-    return join(parleyDir(), "headless");
-  },
-  get logsDir() {
-    return join(parleyDir(), "logs");
-  },
-  get locksDir() {
-    return join(parleyDir(), "locks");
-  },
-  get byClaudePidDir() {
-    return join(parleyDir(), "by-claude-pid");
-  },
-  byClaudePid: (pid) => join(parleyDir(), "by-claude-pid", `${pid}.session`),
-  sessionDir: (sid) => join(parleyDir(), "sessions", sid),
-  sessionManifest: (sid) => join(parleyDir(), "sessions", sid, "manifest.json"),
-  sessionInbox: (sid) => join(parleyDir(), "sessions", sid, "inbox"),
-  sessionInboxInProgress: (sid) => join(parleyDir(), "sessions", sid, "inbox", "in-progress"),
-  sessionInboxRead: (sid) => join(parleyDir(), "sessions", sid, "inbox", "read"),
-  sessionOutbox: (sid) => join(parleyDir(), "sessions", sid, "outbox"),
-  headlessProjectDir: (projectId) => join(parleyDir(), "headless", projectId),
-  headlessFor: (projectId, alias) => join(parleyDir(), "headless", projectId, `${alias}.json`),
-  headlessLockFor: (projectId, alias) => join(parleyDir(), "locks", `${projectId}-${alias}.lock`),
-  logsProjectDir: (projectId) => join(parleyDir(), "logs", projectId),
-  logFor: (projectId, alias) => join(parleyDir(), "logs", projectId, `${alias}.md`),
-  async projectId(cwd) {
-    const remote = await gitRemote(cwd);
-    const source = remote ?? cwd;
-    return createHash("sha1").update(source).digest("hex").slice(0, 12);
-  }
-};
-function expandHome(path) {
-  if (path.startsWith("~")) {
-    return resolve(homedir() + path.slice(1));
-  }
-  return resolve(path);
-}
-
 // src/registry/session-resolver.ts
+init_paths();
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-
-// src/util/errors.ts
-function isErrnoException(e) {
-  return e instanceof Error && typeof e.code === "string";
-}
-function errorMessage(e) {
-  if (e instanceof Error)
-    return e.message;
-  if (typeof e === "string")
-    return e;
-  try {
-    return JSON.stringify(e);
-  } catch {
-    return String(e);
-  }
-}
-
-// src/registry/session-resolver.ts
 var EXEC_TIMEOUT_MS = 1000;
 function resolveSession(input = {}) {
   const ppid = input.ppid ?? process.ppid;
@@ -14295,155 +14874,21 @@ function optionalBool(raw, key) {
   return typeof v === "boolean" ? v : undefined;
 }
 
-// src/registry/peers.ts
-import { readFile as readFile2, mkdir as mkdir2 } from "node:fs/promises";
-
-// src/registry/locks.ts
-import { mkdir, readFile, writeFile, unlink, rename } from "node:fs/promises";
-import { dirname } from "node:path";
-class LockTimeoutError extends Error {
-  constructor(lockPath) {
-    super(`parley: timed out acquiring lock at ${lockPath}`);
-  }
-}
-async function withLock(lockPath, fn, opts = {}) {
-  const timeoutMs = opts.timeoutMs ?? 30000;
-  const pollMs = opts.pollMs ?? 100;
-  const deadline = Date.now() + timeoutMs;
-  await mkdir(dirname(lockPath), { recursive: true });
-  while (true) {
-    try {
-      await writeFile(lockPath, String(process.pid), { flag: "wx" });
-      break;
-    } catch (err) {
-      if (!isErrnoException(err) || err.code !== "EEXIST")
-        throw err;
-      if (await tryReclaimStaleLock(lockPath))
-        continue;
-      if (Date.now() > deadline)
-        throw new LockTimeoutError(lockPath);
-      await sleep(pollMs);
-    }
-  }
-  try {
-    return await fn();
-  } finally {
-    await unlink(lockPath).catch(() => {});
-  }
-}
-async function tryReclaimStaleLock(lockPath) {
-  let pid;
-  try {
-    const contents = (await readFile(lockPath, "utf8")).trim();
-    pid = parseInt(contents, 10);
-    if (!Number.isFinite(pid) || pid <= 0)
-      return false;
-  } catch {
-    return false;
-  }
-  if (pid === process.pid)
-    return false;
-  try {
-    process.kill(pid, 0);
-    return false;
-  } catch {
-    await unlink(lockPath).catch(() => {});
-    return true;
-  }
-}
-async function atomicWriteJSON(path, data) {
-  await mkdir(dirname(path), { recursive: true });
-  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
-  await writeFile(tmp, JSON.stringify(data, null, 2));
-  await rename(tmp, path);
-}
-function sleep(ms) {
-  return new Promise((resolve2) => setTimeout(resolve2, ms));
-}
-
-// src/registry/peers.ts
-var empty = { peers: {} };
-var ALIAS_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/;
-
-class InvalidAliasError extends Error {
-  constructor(alias) {
-    super(`parley: invalid alias "${alias}". Aliases must start with a letter or digit and contain only letters, digits, underscores, or hyphens (max 64 chars).`);
-  }
-}
-function assertValidAlias(alias) {
-  if (typeof alias !== "string" || !ALIAS_PATTERN.test(alias)) {
-    throw new InvalidAliasError(alias);
-  }
-}
-async function readPeers() {
-  try {
-    const raw = await readFile2(paths.peersFile, "utf8");
-    const parsed = JSON.parse(raw);
-    return { peers: parsed.peers ?? {} };
-  } catch (err) {
-    if (isErrnoException(err) && err.code === "ENOENT") {
-      return { ...empty, peers: { ...empty.peers } };
-    }
-    throw err;
-  }
-}
-async function writePeers(file) {
-  await mkdir2(paths.root, { recursive: true });
-  await atomicWriteJSON(paths.peersFile, file);
-}
-async function upsertPeer(alias, config2) {
-  assertValidAlias(alias);
-  return withLock(`${paths.peersFile}.lock`, async () => {
-    const file = await readPeers();
-    const normalized = {
-      path: expandHome(config2.path),
-      description: config2.description,
-      model: config2.model,
-      mcpServers: config2.mcpServers,
-      skipPermissions: config2.skipPermissions ?? true,
-      type: config2.type
-    };
-    file.peers[alias] = normalized;
-    await writePeers(file);
-    return normalized;
-  });
-}
-async function removePeer(alias) {
-  return withLock(`${paths.peersFile}.lock`, async () => {
-    const file = await readPeers();
-    if (!(alias in file.peers))
-      return false;
-    delete file.peers[alias];
-    await writePeers(file);
-    return true;
-  });
-}
-function findPeerInFile(aliasOrPath, file) {
-  if (file.peers[aliasOrPath]) {
-    return { alias: aliasOrPath, config: file.peers[aliasOrPath] };
-  }
-  const expanded = expandHome(aliasOrPath);
-  for (const [alias, cfg] of Object.entries(file.peers)) {
-    if (expandHome(cfg.path) === expanded)
-      return { alias, config: cfg };
-  }
-  return null;
-}
-
 // src/tools/parleyAdd.ts
+init_peers();
 var parleyAdd = {
   name: "parley_add",
   description: "Add or update a peer in ~/.claude/parley/peers.json. Once added, the peer is reachable by alias from any Claude Code session. Pass `description` only when the user explicitly provides one. It is an optional note that helps disambiguate natural-language references; do not invent it.",
   inputSchema: {
     type: "object",
     properties: {
-      alias: { type: "string", description: 'Short name to address the peer by (e.g. "stagent").' },
+      alias: { type: "string", description: "Short name to address the peer by. Typically the directory basename." },
       path: { type: "string", description: "Absolute or ~-prefixed project path." },
       description: {
         type: "string",
-        description: 'OPTIONAL. Free-text hint provided by the user to help match natural-language references (e.g. "the legal project", "the booking app"). Leave empty if the user did not specify one. Do not fabricate.'
+        description: 'OPTIONAL. Free-text hint provided by the user to help match natural-language references (e.g. "the backend api", "the marketing site"). Leave empty if the user did not specify one. Do not fabricate.'
       },
-      skipPermissions: { type: "boolean", description: "Pass --dangerously-skip-permissions to headless spawns. Default true." }
+      skipPermissions: { type: "boolean", description: "Pass --dangerously-skip-permissions on headless spawns. Default unset, in which case [permissions] skip_default from config.json applies (default true)." }
     },
     required: ["alias", "path"],
     additionalProperties: false
@@ -14453,7 +14898,7 @@ var parleyAdd = {
       alias: requireString("parley_add", raw, "alias"),
       path: requireString("parley_add", raw, "path"),
       description: optionalString(raw, "description")?.trim() || undefined,
-      skipPermissions: optionalBool(raw, "skipPermissions") ?? true
+      skipPermissions: optionalBool(raw, "skipPermissions")
     };
   },
   async handler(args) {
@@ -14467,102 +14912,15 @@ var parleyAdd = {
   }
 };
 
-// src/registry/sessions.ts
-import { readdir, readFile as readFile3, mkdir as mkdir3 } from "node:fs/promises";
-var STALE_AFTER_MS = 5 * 60 * 1000;
-function isProcessAlive(pid) {
-  if (!Number.isFinite(pid) || pid <= 0)
-    return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    if (isErrnoException(err) && err.code === "EPERM")
-      return true;
-    return false;
-  }
-}
-async function readManifest(sid) {
-  let raw;
-  try {
-    raw = await readFile3(paths.sessionManifest(sid), "utf8");
-  } catch (err) {
-    if (isErrnoException(err) && err.code === "ENOENT")
-      return null;
-    throw err;
-  }
-  let parsed;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return null;
-  }
-  if (!Number.isFinite(new Date(parsed.lastHeartbeat).getTime()))
-    return null;
-  return parsed;
-}
-async function writeManifest(manifest) {
-  await mkdir3(paths.sessionDir(manifest.sessionId), { recursive: true });
-  await atomicWriteJSON(paths.sessionManifest(manifest.sessionId), manifest);
-}
-async function updateManifest(sid, patch) {
-  return withLock(`${paths.sessionManifest(sid)}.lock`, async () => {
-    const manifest = await readManifest(sid);
-    if (!manifest)
-      return false;
-    const next = patch(manifest);
-    if (!next)
-      return false;
-    await writeManifest(next);
-    return true;
-  });
-}
-async function touchHeartbeat(sid) {
-  await updateManifest(sid, (m) => ({ ...m, lastHeartbeat: new Date().toISOString() }));
-}
-async function setStatus(sid, status) {
-  const updated = await updateManifest(sid, (m) => ({
-    ...m,
-    status,
-    lastHeartbeat: new Date().toISOString()
-  }));
-  if (!updated) {
-    throw new Error(`parley: cannot set status on session "${sid}" because its manifest is missing. The session may have been cleaned up. Restart Claude Code or run a fresh /parley listen.`);
-  }
-}
-async function listSessions() {
-  let entries;
-  try {
-    entries = await readdir(paths.sessionsDir);
-  } catch (err) {
-    if (isErrnoException(err) && err.code === "ENOENT")
-      return [];
-    throw err;
-  }
-  const out = [];
-  for (const sid of entries) {
-    const m = await readManifest(sid);
-    if (m)
-      out.push(m);
-  }
-  return out;
-}
-async function listLiveSessions() {
-  const sessions = await listSessions();
-  const now = Date.now();
-  return sessions.filter((s) => now - new Date(s.lastHeartbeat).getTime() < STALE_AFTER_MS);
-}
-async function listLiveByPath(projectPath) {
-  const live = await listLiveSessions();
-  return live.filter((s) => s.projectPath === projectPath);
-}
-async function findListeningByPath(projectPath) {
-  const live = await listLiveSessions();
-  return live.filter((s) => s.projectPath === projectPath && s.status === "listening");
-}
+// src/routing/router.ts
+init_peers();
+init_extensions();
+init_sessions();
 
 // src/registry/headless.ts
-import { readFile as readFile4, unlink as unlink2 } from "node:fs/promises";
+init_paths();
+init_locks();
+import { readFile as readFile6, unlink as unlink3 } from "node:fs/promises";
 function isHeadlessRecord(v) {
   if (typeof v !== "object" || v === null)
     return false;
@@ -14571,7 +14929,7 @@ function isHeadlessRecord(v) {
 }
 async function readHeadless(projectId, alias) {
   try {
-    const raw = await readFile4(paths.headlessFor(projectId, alias), "utf8");
+    const raw = await readFile6(paths.headlessFor(projectId, alias), "utf8");
     const parsed = JSON.parse(raw);
     return isHeadlessRecord(parsed) ? parsed : null;
   } catch (err) {
@@ -14585,7 +14943,7 @@ async function writeHeadless(record3) {
 }
 async function clearHeadless(projectId, alias) {
   try {
-    await unlink2(paths.headlessFor(projectId, alias));
+    await unlink3(paths.headlessFor(projectId, alias));
     return true;
   } catch (err) {
     if (isErrnoException(err) && err.code === "ENOENT")
@@ -14594,8 +14952,12 @@ async function clearHeadless(projectId, alias) {
   }
 }
 
+// src/routing/router.ts
+init_locks();
+init_paths();
+
 // src/drivers/claude.ts
-import { createRequire } from "node:module";
+import { createRequire as createRequire2 } from "node:module";
 import { spawn } from "node:child_process";
 var DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 var SHUTDOWN_GRACE_MS = 2000;
@@ -14638,7 +15000,7 @@ class ClaudeDriver {
     }
   }
 }
-var requireFromHere = createRequire(import.meta.url);
+var requireFromHere = createRequire2(import.meta.url);
 var resolved = null;
 var overrideTried = false;
 function loadOverride() {
@@ -14682,10 +15044,11 @@ function buildClaudeArgs(opts) {
     args.push("--resume", opts.sessionId);
   if (opts.model)
     args.push("--model", opts.model);
-  if (opts.skipPermissions ?? true)
+  if (opts.skipPermissions)
     args.push("--dangerously-skip-permissions");
-  const mcpConfigJson = JSON.stringify({ mcpServers: opts.mcpServers ?? {} });
-  args.push("--strict-mcp-config", "--mcp-config", mcpConfigJson);
+  if (opts.mcpServers && Object.keys(opts.mcpServers).length > 0) {
+    args.push("--mcp-config", JSON.stringify({ mcpServers: opts.mcpServers }));
+  }
   return args;
 }
 function parseClaudeStreamOutput(input) {
@@ -14728,7 +15091,8 @@ function runClaude(command, args, opts) {
   return new Promise((resolve2, reject) => {
     const child = spawn(command, args, {
       cwd: opts.cwd,
-      stdio: ["ignore", "pipe", "pipe"]
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, PARLEY_SUPPRESS_REGISTER: "1" }
     });
     opts.track?.add(child);
     let stdout = "";
@@ -14786,20 +15150,140 @@ function truncate(s, max = 500) {
   return `${s.slice(0, max)}…(+${s.length - max} chars)`;
 }
 
+// src/config.ts
+import { mkdir as mkdir4, readFile as readFile7, rm as rm2, writeFile as writeFile3 } from "node:fs/promises";
+import { dirname as dirname2, join as join4 } from "node:path";
+import { homedir as homedir2 } from "node:os";
+var FALLBACKS = ["headless", "ask"];
+var DEFAULT_CONFIG = {
+  fallback: "headless",
+  skipDefault: true
+};
+function configPath() {
+  return process.env.PARLEY_CONFIG ?? join4(homedir2(), ".claude", "parley", "config.json");
+}
+function legacyTomlPath() {
+  const explicit = process.env.PARLEY_CONFIG;
+  if (explicit && explicit.endsWith(".json")) {
+    return explicit.replace(/\.json$/, ".toml");
+  }
+  return join4(homedir2(), ".claude", "parley", "config.toml");
+}
+function parseFallback(value) {
+  if (typeof value !== "string")
+    return;
+  const normalized = value.toLowerCase();
+  return FALLBACKS.includes(normalized) ? normalized : undefined;
+}
+function readTomlString(raw, key) {
+  const match = raw.match(new RegExp(`^\\s*${key}\\s*=\\s*["']?([\\w-]+)["']?\\s*$`, "im"));
+  return match?.[1];
+}
+function readTomlBool(raw, key) {
+  const match = raw.match(new RegExp(`^\\s*${key}\\s*=\\s*(true|false)\\s*$`, "im"));
+  if (!match)
+    return;
+  return match[1].toLowerCase() === "true";
+}
+function parseLegacyToml(raw) {
+  return {
+    fallback: parseFallback(readTomlString(raw, "fallback")),
+    skipDefault: readTomlBool(raw, "skip_default")
+  };
+}
+function parseJson(raw) {
+  try {
+    const obj = JSON.parse(raw);
+    if (!obj || typeof obj !== "object")
+      return {};
+    const runtime = obj.runtime ?? {};
+    const permissions = obj.permissions ?? {};
+    return {
+      fallback: parseFallback(runtime.fallback),
+      skipDefault: typeof permissions.skip_default === "boolean" ? permissions.skip_default : undefined
+    };
+  } catch {
+    return {};
+  }
+}
+function isEnoent(err) {
+  return typeof err === "object" && err !== null && err.code === "ENOENT";
+}
+async function migrateLegacyTomlIfPresent() {
+  const legacy = legacyTomlPath();
+  let raw = "";
+  try {
+    raw = await readFile7(legacy, "utf8");
+  } catch (err) {
+    if (isEnoent(err))
+      return null;
+    throw err;
+  }
+  const parsed = parseLegacyToml(raw);
+  if (parsed.fallback === undefined && parsed.skipDefault === undefined) {
+    process.stderr.write(`parley: could not parse legacy config.toml at ${legacy}, leaving in place
+`);
+    return null;
+  }
+  const merged = {
+    fallback: parsed.fallback ?? DEFAULT_CONFIG.fallback,
+    skipDefault: parsed.skipDefault ?? DEFAULT_CONFIG.skipDefault
+  };
+  const target = configPath();
+  await mkdir4(dirname2(target), { recursive: true });
+  await writeFile3(target, formatConfig(merged), "utf8");
+  await rm2(legacy, { force: true });
+  return parsed;
+}
+async function readParleyConfig() {
+  const envFallback = parseFallback(process.env.PARLEY_FALLBACK);
+  let raw = "";
+  try {
+    raw = await readFile7(configPath(), "utf8");
+  } catch (err) {
+    if (!isEnoent(err))
+      throw err;
+    const migrated = await migrateLegacyTomlIfPresent();
+    if (migrated) {
+      return {
+        fallback: envFallback ?? migrated.fallback ?? DEFAULT_CONFIG.fallback,
+        skipDefault: migrated.skipDefault ?? DEFAULT_CONFIG.skipDefault
+      };
+    }
+    return {
+      fallback: envFallback ?? DEFAULT_CONFIG.fallback,
+      skipDefault: DEFAULT_CONFIG.skipDefault
+    };
+  }
+  const parsed = parseJson(raw);
+  return {
+    fallback: envFallback ?? parsed.fallback ?? DEFAULT_CONFIG.fallback,
+    skipDefault: parsed.skipDefault ?? DEFAULT_CONFIG.skipDefault
+  };
+}
+function formatConfig(config2) {
+  return JSON.stringify({
+    runtime: { fallback: config2.fallback },
+    permissions: { skip_default: config2.skipDefault }
+  }, null, 2) + `
+`;
+}
+
 // src/routing/queue.ts
-import { mkdir as mkdir4, readdir as readdir2, readFile as readFile5, writeFile as writeFile3, rename as rename2, access, stat, unlink as unlink3 } from "node:fs/promises";
-import { join as join2 } from "node:path";
+init_paths();
+import { mkdir as mkdir5, readdir as readdir4, readFile as readFile8, writeFile as writeFile4, rename as rename2, access, stat as stat2, unlink as unlink4 } from "node:fs/promises";
+import { join as join5 } from "node:path";
 import { randomBytes } from "node:crypto";
 var POLL_INTERVAL_MS = 500;
 async function* readMessages(dir) {
-  const entries = await readdir2(dir).catch(() => []);
+  const entries = await readdir4(dir).catch(() => []);
   for (const name of entries) {
     if (!name.endsWith(".json"))
       continue;
-    const path = join2(dir, name);
+    const path = join5(dir, name);
     let raw;
     try {
-      raw = await readFile5(path, "utf8");
+      raw = await readFile8(path, "utf8");
     } catch {
       continue;
     }
@@ -14831,22 +15315,22 @@ async function sendMessage(opts) {
     metadata: { fromProject: opts.fromProject }
   };
   const inbox = paths.sessionInbox(opts.toSessionId);
-  await mkdir4(inbox, { recursive: true });
-  const target = join2(inbox, `${id}.json`);
+  await mkdir5(inbox, { recursive: true });
+  const target = join5(inbox, `${id}.json`);
   const tmp = `${target}.${process.pid}.tmp`;
-  await writeFile3(tmp, JSON.stringify(message, null, 2));
+  await writeFile4(tmp, JSON.stringify(message, null, 2));
   await rename2(tmp, target);
   const outbox = paths.sessionOutbox(opts.fromSessionId);
-  await mkdir4(outbox, { recursive: true });
-  const outTarget = join2(outbox, `${id}.json`);
+  await mkdir5(outbox, { recursive: true });
+  const outTarget = join5(outbox, `${id}.json`);
   const outTmp = `${outTarget}.${process.pid}.tmp`;
-  await writeFile3(outTmp, JSON.stringify({ ...message, status: "sent" }, null, 2));
+  await writeFile4(outTmp, JSON.stringify({ ...message, status: "sent" }, null, 2));
   await rename2(outTmp, outTarget);
   return id;
 }
 async function waitForMessage(sessionId, predicate, opts = { timeoutMs: 90000 }) {
   const inbox = paths.sessionInbox(sessionId);
-  await mkdir4(inbox, { recursive: true });
+  await mkdir5(inbox, { recursive: true });
   const deadline = Date.now() + opts.timeoutMs;
   const mark = opts.mark ?? "read";
   while (Date.now() < deadline) {
@@ -14860,8 +15344,8 @@ async function waitForMessage(sessionId, predicate, opts = { timeoutMs: 90000 })
       if (mark === "none")
         return msg;
       const targetDir = mark === "in-progress" ? paths.sessionInboxInProgress(sessionId) : paths.sessionInboxRead(sessionId);
-      await mkdir4(targetDir, { recursive: true });
-      const targetPath = join2(targetDir, name);
+      await mkdir5(targetDir, { recursive: true });
+      const targetPath = join5(targetDir, name);
       try {
         await rename2(sourcePath, targetPath);
       } catch (err) {
@@ -14871,7 +15355,7 @@ async function waitForMessage(sessionId, predicate, opts = { timeoutMs: 90000 })
       }
       const claimed = { ...msg, status: mark };
       const tmp = `${targetPath}.${process.pid}.tmp`;
-      await writeFile3(tmp, JSON.stringify(claimed, null, 2));
+      await writeFile4(tmp, JSON.stringify(claimed, null, 2));
       await rename2(tmp, targetPath);
       return claimed;
     }
@@ -14880,10 +15364,10 @@ async function waitForMessage(sessionId, predicate, opts = { timeoutMs: 90000 })
   return null;
 }
 async function completeInProgress(sessionId, messageId) {
-  const fromPath = join2(paths.sessionInboxInProgress(sessionId), `${messageId}.json`);
+  const fromPath = join5(paths.sessionInboxInProgress(sessionId), `${messageId}.json`);
   let raw;
   try {
-    raw = await readFile5(fromPath, "utf8");
+    raw = await readFile8(fromPath, "utf8");
   } catch {
     return false;
   }
@@ -14895,12 +15379,12 @@ async function completeInProgress(sessionId, messageId) {
   }
   msg.status = "read";
   const readDir = paths.sessionInboxRead(sessionId);
-  await mkdir4(readDir, { recursive: true });
-  const target = join2(readDir, `${messageId}.json`);
+  await mkdir5(readDir, { recursive: true });
+  const target = join5(readDir, `${messageId}.json`);
   const tmp = `${target}.${process.pid}.tmp`;
-  await writeFile3(tmp, JSON.stringify(msg, null, 2));
+  await writeFile4(tmp, JSON.stringify(msg, null, 2));
   await rename2(tmp, target);
-  await unlink3(fromPath).catch(() => {});
+  await unlink4(fromPath).catch(() => {});
   return true;
 }
 async function recoverStuckInProgress(sessionId, olderThanMs) {
@@ -14909,17 +15393,17 @@ async function recoverStuckInProgress(sessionId, olderThanMs) {
   let recovered = 0;
   for await (const { name, path, message: msg } of readMessages(dir)) {
     try {
-      const s = await stat(path);
+      const s = await stat2(path);
       if (s.mtimeMs >= cutoff)
         continue;
       const restored = { ...msg, status: "pending" };
       const inboxDir = paths.sessionInbox(sessionId);
-      await mkdir4(inboxDir, { recursive: true });
-      const target = join2(inboxDir, name);
+      await mkdir5(inboxDir, { recursive: true });
+      const target = join5(inboxDir, name);
       const tmp = `${target}.${process.pid}.tmp`;
-      await writeFile3(tmp, JSON.stringify(restored, null, 2));
+      await writeFile4(tmp, JSON.stringify(restored, null, 2));
       await rename2(tmp, target);
-      await unlink3(path).catch(() => {});
+      await unlink4(path).catch(() => {});
       recovered++;
     } catch {}
   }
@@ -14933,7 +15417,7 @@ async function findInboxStatus(sessionId, messageId) {
   ];
   for (const { status, dir } of candidates) {
     try {
-      await access(join2(dir, `${messageId}.json`));
+      await access(join5(dir, `${messageId}.json`));
       return status;
     } catch {}
   }
@@ -14943,18 +15427,18 @@ async function pruneRead(sessionId, olderThanMs) {
   const readDir = paths.sessionInboxRead(sessionId);
   let entries;
   try {
-    entries = await readdir2(readDir);
+    entries = await readdir4(readDir);
   } catch {
     return 0;
   }
   const cutoff = Date.now() - olderThanMs;
   let removed = 0;
   for (const entry of entries) {
-    const path = join2(readDir, entry);
+    const path = join5(readDir, entry);
     try {
-      const s = await stat(path);
+      const s = await stat2(path);
       if (s.mtimeMs < cutoff) {
-        await unlink3(path);
+        await unlink4(path);
         removed++;
       }
     } catch {}
@@ -14966,9 +15450,10 @@ function sleep2(ms) {
 }
 
 // src/routing/transcript.ts
-import { appendFile, mkdir as mkdir5, readFile as readFile6 } from "node:fs/promises";
+init_paths();
+import { appendFile, mkdir as mkdir6, readFile as readFile9 } from "node:fs/promises";
 async function appendTurn(projectId, alias, fromProject, question, answer, via) {
-  await mkdir5(paths.logsProjectDir(projectId), { recursive: true });
+  await mkdir6(paths.logsProjectDir(projectId), { recursive: true });
   const ts = new Date().toISOString();
   const block = `## ${ts} · from ${fromProject} (${via})
 
@@ -14985,7 +15470,7 @@ ${answer}
 }
 async function readTranscript(projectId, alias, tail) {
   try {
-    const content = await readFile6(paths.logFor(projectId, alias), "utf8");
+    const content = await readFile9(paths.logFor(projectId, alias), "utf8");
     if (tail <= 0)
       return content;
     const blocks = content.split(/^---\s*$/m).filter((b) => b.trim().length > 0);
@@ -14999,11 +15484,20 @@ async function readTranscript(projectId, alias, tail) {
 }
 
 // src/routing/router.ts
+var ASK_TIMEOUT_DEFAULT_MS = 30 * 60 * 1000;
+function askTimeoutMs() {
+  const raw = process.env.PARLEY_ASK_TIMEOUT_MS;
+  if (!raw)
+    return ASK_TIMEOUT_DEFAULT_MS;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : ASK_TIMEOUT_DEFAULT_MS;
+}
 var CONCISE_PREAMBLE = `[parley directive: answer this query from a peer Claude Code session]
 Be direct. Use the minimum number of tool calls needed to answer accurately. Do NOT explore the codebase tangentially, propose follow-ups, refactor, or add work the user did not ask for. Format your answer concisely.
 
 `;
 async function routeAsk(input) {
+  const effectiveTimeoutMs = input.timeoutMs ?? askTimeoutMs();
   const peersFile = await readPeers();
   const peer = await resolvePeer(input.peerRef, peersFile);
   if (!peer) {
@@ -15012,11 +15506,20 @@ async function routeAsk(input) {
   if (peer.sessionId && peer.sessionId === input.fromSessionId) {
     throw new Error(`parley: "${input.peerRef}" is this session. You cannot ask yourself. Use the current session's tools directly.`);
   }
-  const live = await resolveListening(peer.alias, peer.config, peer.sessionId, input.fromSessionId);
+  const pointer = await readHeadless(input.fromProjectId, peer.alias);
+  const live = await resolveListening(peer.alias, peer.config, peer.sessionId, input.fromSessionId, pointer?.claudeSessionId);
   switch (live.kind) {
     case "single": {
-      const answer = await routeLive({ ...input, target: live.session });
+      const answer = await routeLive({ ...input, target: live.session, timeoutMs: effectiveTimeoutMs });
       await appendTurn(input.fromProjectId, peer.alias, input.fromProject, input.question, answer, "live");
+      if (live.session.claudeSessionId) {
+        await updatePointerToLive({
+          pointer,
+          peer,
+          fromProjectId: input.fromProjectId,
+          claudeSessionId: live.session.claudeSessionId
+        });
+      }
       return { alias: peer.alias, tier: "live", answer };
     }
     case "multiple": {
@@ -15031,12 +15534,17 @@ async function routeAsk(input) {
       break;
     default:
   }
+  const config2 = await readParleyConfig();
+  const fallback = config2.fallback;
+  if (fallback === "ask") {
+    throw new Error(noListenerMessage(peer.alias));
+  }
   const cwd = expandHome(peer.config.path);
   const driver = getClaudeDriver();
   const wrappedPrompt = CONCISE_PREAMBLE + input.question;
   const model = peer.config.model;
   const mcpServers = peer.config.mcpServers ?? {};
-  const skipPermissions = peer.config.skipPermissions ?? true;
+  const skipPermissions = peer.config.skipPermissions ?? config2.skipDefault;
   return withLock(paths.headlessLockFor(input.fromProjectId, peer.alias), async () => {
     const cached2 = await readHeadless(input.fromProjectId, peer.alias);
     let tier;
@@ -15044,7 +15552,7 @@ async function routeAsk(input) {
     const baseSpawn = {
       cwd,
       prompt: wrappedPrompt,
-      timeoutMs: input.timeoutMs,
+      timeoutMs: effectiveTimeoutMs,
       skipPermissions,
       model,
       mcpServers
@@ -15071,12 +15579,54 @@ async function routeAsk(input) {
       cwd,
       createdAt: cached2?.createdAt ?? now,
       lastUsedAt: now,
-      turnCount: (cached2?.turnCount ?? 0) + 1
+      turnCount: (cached2?.turnCount ?? 0) + 1,
+      origin: "headless"
     };
     await writeHeadless(next);
     await appendTurn(input.fromProjectId, peer.alias, input.fromProject, input.question, result.output, tier);
     return { alias: peer.alias, tier, answer: result.output };
   });
+}
+async function updatePointerToLive(opts) {
+  const now = new Date().toISOString();
+  const next = {
+    projectId: opts.fromProjectId,
+    alias: opts.peer.alias,
+    claudeSessionId: opts.claudeSessionId,
+    cwd: expandHome(opts.peer.config.path),
+    createdAt: opts.pointer?.createdAt ?? now,
+    lastUsedAt: now,
+    turnCount: (opts.pointer?.turnCount ?? 0) + 1,
+    origin: "live"
+  };
+  await writeHeadless(next);
+}
+function noListenerMessage(alias) {
+  return [
+    `parley: no live listener for "${alias}" and fallback="ask". Background would draw from your Agent SDK credit pool (separate from interactive subscription).`,
+    `Options:`,
+    `  • Open the peer and run /parley listen, then retry to route live (zero SDK credit).`,
+    `  • Spawn headless this once: set fallback="headless" in ~/.claude/parley/config.json or PARLEY_FALLBACK=headless.`
+  ].join(`
+`);
+}
+function canonicalExtensionAlias(extensions, extPeer) {
+  const first = extensions.find((p) => expandHome(p.path) === expandHome(extPeer.path));
+  return first?.alias ?? extPeer.alias;
+}
+async function canonicalAlias(ref) {
+  const colonIdx = ref.indexOf(":");
+  const aliasPart = colonIdx >= 0 ? ref.slice(0, colonIdx) : ref;
+  const direct = findPeerInFile(aliasPart, await readPeers());
+  if (direct)
+    return direct.alias;
+  const extensions = await readExtensions();
+  const extPeer = extensions.find((p) => p.alias === aliasPart);
+  if (extPeer)
+    return canonicalExtensionAlias(extensions, extPeer);
+  const live = await listLiveSessions();
+  const match = live.find((s) => s.alias === aliasPart || s.projectName === aliasPart || s.projectPath === expandHome(aliasPart));
+  return match?.alias ?? aliasPart;
 }
 async function resolvePeer(ref, peersFile) {
   const colonIdx = ref.indexOf(":");
@@ -15085,6 +15635,22 @@ async function resolvePeer(ref, peersFile) {
   const direct = findPeerInFile(aliasPart, peersFile);
   if (direct)
     return { ...direct, sessionId: sessionId || undefined };
+  const extensions = await readExtensions();
+  const extPeer = extensions.find((p) => p.alias === aliasPart);
+  if (extPeer) {
+    return {
+      alias: canonicalExtensionAlias(extensions, extPeer),
+      config: {
+        path: extPeer.path,
+        description: extPeer.description,
+        type: extPeer.type,
+        model: extPeer.model,
+        mcpServers: extPeer.mcpServers,
+        skipPermissions: extPeer.skipPermissions
+      },
+      sessionId: sessionId || undefined
+    };
+  }
   const live = await listLiveSessions();
   const match = live.find((s) => s.alias === aliasPart || s.projectName === aliasPart || s.projectPath === expandHome(aliasPart));
   if (match) {
@@ -15096,7 +15662,7 @@ async function resolvePeer(ref, peersFile) {
   }
   return null;
 }
-async function resolveListening(_alias, config2, sessionId, fromSessionId) {
+async function resolveListening(_alias, config2, sessionId, fromSessionId, preferredClaudeSessionId) {
   const target = expandHome(config2.path);
   if (sessionId) {
     const manifest = await readManifest(sessionId);
@@ -15113,6 +15679,11 @@ async function resolveListening(_alias, config2, sessionId, fromSessionId) {
     return { kind: "none" };
   if (sessions.length === 1)
     return { kind: "single", session: sessions[0] };
+  if (preferredClaudeSessionId) {
+    const matched = sessions.find((s) => s.claudeSessionId === preferredClaudeSessionId);
+    if (matched)
+      return { kind: "single", session: matched };
+  }
   return { kind: "multiple", sessions };
 }
 async function routeLive(opts) {
@@ -15123,7 +15694,7 @@ async function routeLive(opts) {
     type: "query",
     content: opts.question
   });
-  const reply = await waitForMessage(opts.fromSessionId, (m) => m.type === "response" && m.inReplyTo === msgId, { timeoutMs: opts.timeoutMs ?? 120000 });
+  const reply = await waitForMessage(opts.fromSessionId, (m) => m.type === "response" && m.inReplyTo === msgId, { timeoutMs: opts.timeoutMs });
   if (!reply) {
     const status = await findInboxStatus(opts.target.sessionId, msgId);
     const hints = {
@@ -15138,15 +15709,16 @@ async function routeLive(opts) {
 }
 
 // src/tools/parleyAsk.ts
+init_sessions();
 var parleyAsk = {
   name: "parley_ask",
-  description: "Send a question to another project's Claude agent and return its answer. The peer is identified by alias (preferred, see parley_peers), by absolute path, or by alias:sid to target a specific listening session. Routing is automatic: live if exactly one /parley listen session matches, otherwise headless (resumed if a cached session exists, fresh otherwise). With 2+ listening sessions and no :sid, parley returns an error listing the available sids so you can retry with the explicit suffix. Headless agents run in the peer's project directory with full CLAUDE.md, skills, and tools loaded. A concise directive is always prepended to keep the peer focused. The peer's response is appended to a transcript log readable via parley_log.",
+  description: "Send a question to another project's Claude agent and return its answer. Parley keeps one continuous conversation per (project, peer): a live listener answers in its window when one exists; otherwise it spawns headless `claude -p` in the peer's directory. Either path resumes the same claude session via --resume, so closing a window between turns doesn't lose memory. Peer is identified by alias (preferred, see parley_peers), by absolute path, or by alias:sid for a specific listener. The peer's project directory and CLAUDE.md/skills/MCP servers are loaded. Response is logged via parley_log.",
   inputSchema: {
     type: "object",
     properties: {
       peer: {
         type: "string",
-        description: 'Peer alias (e.g. "stagent"), alias:sid for a specific listening session (e.g. "onoma:a6v9lk"), or absolute project path. Run parley_peers to see options.'
+        description: "Peer alias, `<alias>:<sid>` for a specific listening session (e.g. `<peer>:a6v9lk`), or absolute project path. Run parley_peers to see options."
       },
       question: {
         type: "string",
@@ -15154,7 +15726,7 @@ var parleyAsk = {
       },
       timeoutMs: {
         type: "number",
-        description: "Optional. Max time to wait for the peer to respond. Default 300000 (5 min)."
+        description: "Optional. Max ms to wait for the peer to respond. Leave unset unless you specifically need a tight bound; peers doing execution work can take 30+ min. Default 1800000 (30 min). Override the default globally via PARLEY_ASK_TIMEOUT_MS."
       }
     },
     required: ["peer", "question"],
@@ -15183,243 +15755,47 @@ var parleyAsk = {
       fromProjectId,
       timeoutMs: args.timeoutMs
     });
-    return `[${result.alias} via ${result.tier}]
+    const prefix = result.tier === "live" ? `[${result.alias} · live]` : `[${result.alias}]`;
+    return `${prefix}
 
 ${result.answer}`;
   }
 };
 
-// src/cleanup/sweep.ts
-import { readdir as readdir3, rm, stat as stat2, unlink as unlink4 } from "node:fs/promises";
-import { join as join3 } from "node:path";
-var HEARTBEAT_DEAD_MS = 60 * 60 * 1000;
-async function sweep(opts = {}) {
-  const dryRun = opts.dryRun === true;
-  const removed = {
-    sessions: [],
-    sentinels: [],
-    headless: [],
-    projectDirs: []
-  };
-  const advisories = [];
-  const peersFile = await readPeers();
-  const peerAliases = new Set(Object.keys(peersFile.peers));
-  await sweepSessions(removed, dryRun);
-  await sweepSentinels(removed, dryRun);
-  await sweepHeadless(peerAliases, removed, dryRun);
-  await sweepEmptyProjectDirs(removed, dryRun);
-  await collectAdvisories(peersFile.peers, advisories);
-  return { removed, advisories, dryRun };
-}
-async function sweepSessions(removed, dryRun) {
-  let entries;
-  try {
-    entries = await readdir3(paths.sessionsDir);
-  } catch (err) {
-    if (isErrnoException(err) && err.code === "ENOENT")
-      return;
-    throw err;
-  }
-  const now = Date.now();
-  for (const sid of entries) {
-    const manifest = await readManifest(sid);
-    if (!manifest) {
-      if (!dryRun)
-        await rm(paths.sessionDir(sid), { recursive: true, force: true });
-      removed.sessions.push(sid);
-      continue;
-    }
-    const age = now - new Date(manifest.lastHeartbeat).getTime();
-    const stale = age > HEARTBEAT_DEAD_MS;
-    const processAlive = isProcessAlive(manifest.pid);
-    const pathGone = !await pathExists(manifest.projectPath);
-    if (stale && (!processAlive || pathGone)) {
-      if (!dryRun)
-        await rm(paths.sessionDir(sid), { recursive: true, force: true });
-      removed.sessions.push(sid);
-    }
-  }
-}
-async function sweepSentinels(removed, dryRun) {
-  let entries;
-  try {
-    entries = await readdir3(paths.byClaudePidDir);
-  } catch (err) {
-    if (isErrnoException(err) && err.code === "ENOENT")
-      return;
-    throw err;
-  }
-  for (const file of entries) {
-    if (!file.endsWith(".session"))
-      continue;
-    const pid = parseInt(file.slice(0, -".session".length), 10);
-    if (!Number.isFinite(pid) || isProcessAlive(pid))
-      continue;
-    if (!dryRun)
-      await unlink4(join3(paths.byClaudePidDir, file)).catch(() => {});
-    removed.sentinels.push(file);
-  }
-}
-async function sweepHeadless(peerAliases, removed, dryRun) {
-  let projectDirs;
-  try {
-    projectDirs = await readdir3(paths.headlessDir);
-  } catch (err) {
-    if (isErrnoException(err) && err.code === "ENOENT")
-      return;
-    throw err;
-  }
-  for (const projectId of projectDirs) {
-    const projectDir = paths.headlessProjectDir(projectId);
-    let entries;
-    try {
-      const st = await stat2(projectDir);
-      if (!st.isDirectory())
-        continue;
-      entries = await readdir3(projectDir);
-    } catch (err) {
-      if (isErrnoException(err) && err.code === "ENOENT")
-        continue;
-      throw err;
-    }
-    for (const file of entries) {
-      if (!file.endsWith(".json"))
-        continue;
-      const alias = file.slice(0, -".json".length);
-      if (peerAliases.has(alias))
-        continue;
-      if (!dryRun)
-        await unlink4(join3(projectDir, file)).catch(() => {});
-      removed.headless.push(`${projectId}/${alias}`);
-    }
-  }
-}
-async function sweepEmptyProjectDirs(removed, dryRun) {
-  for (const root of [paths.headlessDir, paths.logsDir]) {
-    let entries;
-    try {
-      entries = await readdir3(root);
-    } catch (err) {
-      if (isErrnoException(err) && err.code === "ENOENT")
-        continue;
-      throw err;
-    }
-    for (const name of entries) {
-      const dir = join3(root, name);
-      try {
-        const st = await stat2(dir);
-        if (!st.isDirectory())
-          continue;
-        const contents = await readdir3(dir);
-        if (contents.length > 0)
-          continue;
-        if (!dryRun)
-          await rm(dir, { recursive: true, force: true });
-        removed.projectDirs.push(`${root.endsWith("/headless") ? "headless" : "logs"}/${name}`);
-      } catch (err) {
-        if (isErrnoException(err) && err.code === "ENOENT")
-          continue;
-        throw err;
-      }
-    }
-  }
-}
-async function collectAdvisories(peers, advisories) {
-  for (const [alias, cfg] of Object.entries(peers)) {
-    const resolved2 = expandHome(cfg.path);
-    if (!await pathExists(resolved2)) {
-      advisories.push(`peer "${alias}" path ${cfg.path}: directory does not exist (use /parley remove ${alias} if intentional)`);
-    }
-  }
-}
-async function pathExists(p) {
-  try {
-    await stat2(p);
-    return true;
-  } catch (err) {
-    if (isErrnoException(err) && err.code === "ENOENT")
-      return false;
-    throw err;
-  }
-}
-
-// src/registry/state.ts
-import { readFile as readFile7 } from "node:fs/promises";
-async function readState() {
-  let raw;
-  try {
-    raw = await readFile7(paths.stateFile, "utf8");
-  } catch (err) {
-    if (isErrnoException(err) && err.code === "ENOENT")
-      return {};
-    throw err;
-  }
-  try {
-    const parsed = JSON.parse(raw);
-    const lastCleanAt = typeof parsed.lastCleanAt === "string" ? parsed.lastCleanAt : undefined;
-    return { lastCleanAt };
-  } catch {
-    return {};
-  }
-}
-async function writeState(state) {
-  await atomicWriteJSON(paths.stateFile, state);
-}
-async function touchLastClean(now = new Date) {
-  const state = await readState();
-  state.lastCleanAt = now.toISOString();
-  await writeState(state);
-}
-
 // src/tools/parleyClean.ts
+init_sweep();
+init_state();
 var CLEAN_INTERVAL_MS = 60 * 60 * 1000;
 var parleyClean = {
   name: "parley_clean",
-  description: "Remove stale Parley state on this machine: dead session manifests, dangling PID sentinels, and headless caches for peers that are no longer registered. peers.json entries with missing paths are flagged but never auto-removed. Idempotent. Use dryRun to preview without modifying anything. Use auto=true to no-op when state.json.lastCleanAt is younger than 1 hour (the /parley skill calls auto-clean at the top of every action via this flag).",
+  description: "Remove stale Parley state on this machine: dead session manifests, dangling PID sentinels, and headless caches for peers that are no longer registered. peers.json entries with missing paths are flagged but never auto-removed. Idempotent. Use dryRun to preview without modifying anything. The MCP server also runs this sweep automatically once per hour, so explicit cleans are only needed for ad-hoc inspection.",
   inputSchema: {
     type: "object",
     properties: {
       dryRun: {
         type: "boolean",
         description: "If true, report what would be removed without actually removing anything."
-      },
-      auto: {
-        type: "boolean",
-        description: "If true, skip the sweep when state.json.lastCleanAt is younger than 1 hour. Returns an empty string in that case."
       }
     },
     additionalProperties: false
   },
   parseArgs(raw) {
     return {
-      dryRun: optionalBool(raw, "dryRun") ?? false,
-      auto: optionalBool(raw, "auto") ?? false
+      dryRun: optionalBool(raw, "dryRun") ?? false
     };
   },
   async handler(args) {
     const dryRun = args.dryRun;
-    const auto = args.auto;
     const now = new Date;
-    if (auto) {
-      const state = await readState();
-      if (state.lastCleanAt) {
-        const last = new Date(state.lastCleanAt).getTime();
-        if (Number.isFinite(last) && now.getTime() - last < CLEAN_INTERVAL_MS) {
-          return "";
-        }
-      }
-    }
     const result = await sweep({ dryRun });
     const totalRemoved = countRemoved(result);
     if (!dryRun)
       await touchLastClean(now);
-    if (auto && totalRemoved === 0 && result.advisories.length === 0)
-      return "";
     return formatReport(result, totalRemoved, now);
   }
 };
 function countRemoved(result) {
-  return result.removed.sessions.length + result.removed.sentinels.length + result.removed.headless.length + result.removed.projectDirs.length;
+  return result.removed.sessions.length + result.removed.sentinels.length + result.removed.headless.length + result.removed.projectDirs.length + result.removed.extensions.length;
 }
 function formatReport(result, totalRemoved, now) {
   const lines = [];
@@ -15444,6 +15820,11 @@ function formatReport(result, totalRemoved, now) {
       for (const d of result.removed.projectDirs)
         lines.push(`      ${d}`);
     }
+    if (result.removed.extensions.length > 0) {
+      lines.push(`  • ${result.removed.extensions.length} stale extension manifest(s)`);
+      for (const e of result.removed.extensions)
+        lines.push(`      ${e}`);
+    }
   }
   if (result.advisories.length > 0) {
     lines.push("");
@@ -15461,17 +15842,17 @@ function formatReport(result, totalRemoved, now) {
 }
 
 // src/discovery/projects.ts
-import { readdir as readdir4, stat as stat3 } from "node:fs/promises";
+import { readdir as readdir5, stat as stat3 } from "node:fs/promises";
 import { createReadStream, existsSync as existsSync3 } from "node:fs";
 import { createInterface } from "node:readline";
-import { homedir as homedir2 } from "node:os";
-import { join as join4 } from "node:path";
-var PROJECTS_DIR = join4(homedir2(), ".claude", "projects");
+import { homedir as homedir3 } from "node:os";
+import { join as join6 } from "node:path";
+var PROJECTS_DIR = join6(homedir3(), ".claude", "projects");
 var SCAN_LINE_LIMIT = 20;
 async function discoverProjects() {
   let entries;
   try {
-    entries = await readdir4(PROJECTS_DIR);
+    entries = await readdir5(PROJECTS_DIR);
   } catch (err) {
     if (isErrnoException(err) && err.code === "ENOENT")
       return [];
@@ -15479,7 +15860,7 @@ async function discoverProjects() {
   }
   const results = [];
   for (const entry of entries) {
-    const dir = join4(PROJECTS_DIR, entry);
+    const dir = join6(PROJECTS_DIR, entry);
     const newest = await newestJsonl(dir);
     if (!newest)
       continue;
@@ -15497,7 +15878,7 @@ async function discoverProjects() {
 async function newestJsonl(dir) {
   let entries;
   try {
-    entries = await readdir4(dir);
+    entries = await readdir5(dir);
   } catch {
     return null;
   }
@@ -15505,7 +15886,7 @@ async function newestJsonl(dir) {
   for (const e of entries) {
     if (!e.endsWith(".jsonl"))
       continue;
-    const p = join4(dir, e);
+    const p = join6(dir, e);
     try {
       const s = await stat3(p);
       if (!best || s.mtime > best.mtime)
@@ -15560,6 +15941,8 @@ function relativeAge(now, then) {
 }
 
 // src/tools/parleyDiscover.ts
+init_peers();
+init_paths();
 var parleyDiscover = {
   name: "parley_discover",
   description: "Scan ~/.claude/projects/ for project directories where the user has recently used Claude Code. Returns candidates that aren't yet registered as peers, sorted by last-used time. Useful for onboarding: pick which to add with parley_add. Does not register anything itself.",
@@ -15600,6 +15983,7 @@ var parleyDiscover = {
 };
 
 // src/tools/parleyListen.ts
+init_sessions();
 var parleyListen = {
   name: "parley_listen",
   description: 'Flip the current session into "listening" status, making it an addressable live peer for its project path. Once listening, peer queries from other sessions can be routed to this window via the live tier instead of falling through to a headless spawn. Returns the session ID so other windows can address this session as alias:sid. The /parley listen slash command calls this tool, then enters the polling loop to receive and answer messages.',
@@ -15641,15 +16025,20 @@ var parleyLog = {
   },
   async handler(args, ctx) {
     const fromProjectId = await ctx.getProjectId();
-    const content = await readTranscript(fromProjectId, args.alias, args.tail);
+    const alias = await canonicalAlias(args.alias);
+    const content = await readTranscript(fromProjectId, alias, args.tail);
     return content || `No transcript yet for "${args.alias}" from this project.`;
   }
 };
 
 // src/tools/parleyPeers.ts
+init_peers();
+init_sessions();
+init_extensions();
+init_paths();
 var parleyPeers = {
   name: "parley_peers",
-  description: "List all addressable peers on this machine. Call this FIRST whenever the user references another project by name (e.g. 'ask stagent about X', 'check with onoma', 'what does Y think'). Each peer gets a headless row (always reachable, alias-keyed) plus one row per /parley listen session at that path (addressable as alias:sid). Use the result to pick the right peer ref before calling parley_ask. Returns a markdown table: Peer, Type ('project' by default; 'persona' for entries managed by the personas plugin), Source (Code / Code CLI / Cowork / '-'), Mode (headless/listening), History (turns of cached headless conversation from the calling project, or '-'), Path, Notes.",
+  description: "List all addressable peers on this machine. Call this FIRST whenever the user references another project by name (e.g. 'ask <peer> about X', 'check with <peer>'). Each peer gets a headless row (always reachable, alias-keyed) plus one row per /parley listen session at that path (addressable as alias:sid). Includes peers from ~/.claude/parley/peers.json AND from any extension manifests under ~/.claude/parley/extensions/. Use the result to pick the right peer ref before calling parley_ask. Returns a markdown table: Peer, Type, Source, Mode (headless/listening), History (turns of cached headless conversation from the calling project, or '-'), Location (filesystem path, or `<plugin>@<marketplace>` for plugin-managed peers), Notes.",
   inputSchema: {
     type: "object",
     properties: {},
@@ -15682,6 +16071,30 @@ var parleyPeers = {
         type: cfg.type
       });
     }
+    const extensions = await readExtensions();
+    const userAliases = new Set(Object.keys(peersFile.peers));
+    for (const ext of extensions) {
+      if (userAliases.has(ext.alias))
+        continue;
+      const path = expandHome(ext.path);
+      if (seenPaths.has(path))
+        continue;
+      seenPaths.add(path);
+      const sessions = await listLiveByPath(path);
+      await pushRowsForPath({
+        rows,
+        alias: ext.alias,
+        displayPath: formatPath(ext.path, ext.type),
+        sessions,
+        discovered: false,
+        description: ext.description,
+        mySid,
+        skipHeadless: path === myPath,
+        fromProjectId,
+        type: ext.type,
+        extension: ext.extension
+      });
+    }
     for (const s of live) {
       if (seenPaths.has(s.projectPath))
         continue;
@@ -15703,9 +16116,14 @@ var parleyPeers = {
     if (rows.length === 0) {
       return "No peers found. Add one with parley_add, or open another Claude Code session to discover it.";
     }
-    const header = `| Peer | Type | Source | Mode | History | Path | Notes |
+    rows.sort((a, b) => {
+      const aName = a.peer.split(":")[0];
+      const bName = b.peer.split(":")[0];
+      return aName.localeCompare(bName);
+    });
+    const header = `| Peer | Type | Source | Mode | History | Location | Notes |
 |---|---|---|---|---|---|---|`;
-    const body = rows.map((r) => `| ${r.peer} | ${r.type} | ${r.source} | ${r.mode} | ${r.history} | \`${r.path}\` | ${r.notes.join(". ")} |`);
+    const body = rows.map((r) => `| ${r.peer} | ${r.type} | ${r.source} | ${r.mode} | ${r.history} | \`${r.location}\` | ${r.notes.join(". ")} |`);
     return [header, ...body].join(`
 `);
   }
@@ -15722,8 +16140,8 @@ async function pushRowsForPath(opts) {
     if (nonListening.length > 0) {
       headlessNotes.push(`${nonListening.length} active window${nonListening.length === 1 ? "" : "s"}`);
     }
-    if (opts.type === "persona") {
-      headlessNotes.push("managed with /personas");
+    if (opts.extension) {
+      headlessNotes.push(`managed with /${opts.extension}`);
     } else if (opts.description) {
       headlessNotes.push(opts.description);
     }
@@ -15734,7 +16152,7 @@ async function pushRowsForPath(opts) {
       source: formatSource(seed?.platform, seed?.mode),
       mode: "headless",
       history,
-      path: opts.displayPath,
+      location: opts.displayPath,
       notes: headlessNotes
     });
   }
@@ -15745,7 +16163,7 @@ async function pushRowsForPath(opts) {
       source: formatSource(s.platform, s.mode),
       mode: "listening",
       history: "-",
-      path: opts.displayPath,
+      location: opts.displayPath,
       notes: []
     });
   }
@@ -15810,6 +16228,7 @@ var parleyReceiveNext = {
 };
 
 // src/tools/parleyRemove.ts
+init_peers();
 var parleyRemove = {
   name: "parley_remove",
   description: "Remove a peer from ~/.claude/parley/peers.json. Does not delete cached headless sessions or transcripts. Use parley_reset for that.",
@@ -15847,12 +16266,14 @@ var parleyReset = {
   },
   async handler(args, ctx) {
     const projectId = await ctx.getProjectId();
-    const cleared = await clearHeadless(projectId, args.alias);
+    const alias = await canonicalAlias(args.alias);
+    const cleared = await clearHeadless(projectId, alias);
     return cleared ? `Cleared cached headless session for "${args.alias}" in this project. Next ask will spawn fresh.` : `No cached headless session for "${args.alias}" in this project.`;
   }
 };
 
 // src/tools/parleyRespond.ts
+init_sessions();
 var parleyRespond = {
   name: "parley_respond",
   description: "Send a response back to a peer who queried this session. Use inside the /parley listen loop after answering a query received via parley_receive_next. The toSessionId and inReplyTo come from the FROM_ID and MESSAGE_ID of the received query.",
@@ -15908,6 +16329,7 @@ var tools = [
 ];
 
 // src/server.ts
+init_sessions();
 var HEARTBEAT_INTERVAL_MS = 30000;
 var PRUNE_OLDER_THAN_MS = 24 * 60 * 60 * 1000;
 var RECOVER_STUCK_OLDER_THAN_MS = 10 * 60 * 1000;
