@@ -43,6 +43,7 @@ Field rules:
 | `peers[].model` | optional | Model the headless spawn uses for this peer (e.g. `opus`). Passed as `claude --model`. |
 | `peers[].mcpServers` | optional | MCP servers to expose to the headless spawn. Same shape as `peers.json` `mcpServers`. |
 | `peers[].skipPermissions` | optional | Boolean. Passes `--dangerously-skip-permissions` for this peer. Falls back to `permissions.skip_default` when unset. |
+| `peers[].memory` | optional | Boolean. Whether durable memory is on for this peer. Falls back to `memory.default` when unset; a user `memory.peers` override in `config.json` always wins. |
 
 Entries missing `alias` or `path` are skipped. Malformed JSON is skipped silently. Your extension doesn't break parley if the file is bad, but the peers won't show up either.
 

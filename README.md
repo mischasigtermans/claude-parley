@@ -55,6 +55,7 @@ You can also be explicit:
 ## Features
 
 - **One continuous conversation per (project, `<peer>`).** Live and headless transports share a session pointer; the next ask resumes the same claude session whichever path runs.
+- **Durable memory per (project, `<peer>`).** `/parley remember <peer>` distils a conversation into bullets that prepend to every future ask, so context survives even a fresh session. Opt out per peer in `config.json`.
 - **Headless by default.** `fallback = "headless"` spawns `claude -p` in the peer's directory (draws from your Agent SDK credit pool). No window pops open. To answer at zero SDK credit instead, open the peer and run `/parley listen`; an already-listening window handles the ask live. Set `fallback = "ask"` in `~/.claude/parley/config.json` to be prompted each time no listener exists.
 - **Per-asker-project state.** Each calling project gets its own cached session, transcript, and turn count per `<peer>`.
 - **Auto-discovery** of recent Claude projects via `/parley discover`.
