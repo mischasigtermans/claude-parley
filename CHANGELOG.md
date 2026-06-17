@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.4.0] - 2026-06-17
+
+Durable per-peer memory. Parley now carries what you learned from a peer across sessions: distil a conversation into bullets, and every future headless ask to that peer from the same project arrives pre-primed with them. Memory lives in parley (not the personas plugin), applies to every peer, and is opt-out per peer.
+
+**Added**
+
+- **Durable memory store.** `~/.claude/parley/memory/<projectId>/<alias>.md`, a flat `- bullet` list keyed by the peer's canonical alias (so all of a persona's aliases share one file). `src/registry/memory.ts` exposes `readMemory`, `appendMemoryBullets` (deduped, lock-guarded), and `clearMemory`. Dedup key is the bullet text lowercased, leading `- ` stripped, first 60 chars.
+- **`parley_remember` tool.** Pure storage: the calling agent distils the transcript (via `parley_log`) into 3-8 bullets and passes them in; parley dedupe-appends and advances the peer's high-water mark. No extra `claude -p` spawn. Off-peer memory returns a no-op message.
+- **Memory injection.** On a headless ask, if memory exists for the peer it's prepended to the prompt between the concise preamble and the question, under `[your memory from past conversations with this project]`. Empty memory injects nothing (zero overhead).
+- **Dirty tracking.** `HeadlessRecord` gains `rememberedTurn` (the turnCount at the last `parley_remember`). A peer is "dirty" when `turnCount > rememberedTurn`. `parley_ask` appends a `[parley: N turns ... not yet distilled]` nudge at ≥3 pending turns; `parley_peers` shows an `N to distill` note. Detection is durable and hook-free; the skill flushes in-conversation.
+- **Per-peer memory toggle.** New `memory` section in `config.json` (`{ "memory": { "default": true, "peers": { "<alias>": false } } }`). Precedence: per-peer config override → the peer's own declared `memory` flag (`peers.json` or an extension manifest) → config default. `PeerConfig.memory` and `ExtensionPeer.memory` carry the declared flag; personas can opt out via `persona.json`.
+
+**Changed**
+
+- `AskResult` gains `pending` (turns since last distillation).
+- `sweepEmptyProjectDirs` also prunes empty `memory/<projectId>/` dirs; the removed-dir label now uses `basename(root)`. Individual memory files are never auto-deleted.
+- `parley_reset` is unchanged: it clears the session pointer but leaves memory intact, so accumulated knowledge survives a reset.
+
 ## [0.3.0] - 2026-05-19
 
 Per-asker-project scoping for headless peer state, and one continuous conversation per (project, `<peer>`) across transports. Each asking project gets its own cached Claude session, transcript log, and turn count with each peer. Closing a Terminal between turns no longer loses memory. The next ask resumes the cached claude session whether it routes live again or falls back to headless.

@@ -63,6 +63,10 @@ export const parleyAsk: ToolDef<Args> = {
     const prefix = result.tier === 'live'
       ? `[${result.alias} · live]`
       : `[${result.alias}]`;
-    return `${prefix}\n\n${result.answer}`;
+    // Nudge the caller to distill once a few turns have piled up undistilled.
+    const nudge = result.pending >= 3
+      ? `\n\n[parley: ${result.pending} turns with ${result.alias} not yet distilled — call parley_remember ${result.alias} to persist memory]`
+      : '';
+    return `${prefix}\n\n${result.answer}${nudge}`;
   },
 };

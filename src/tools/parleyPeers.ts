@@ -148,6 +148,8 @@ async function pushRowsForPath(opts: {
       : '-';
 
     const headlessNotes: string[] = [];
+    const pending = headless ? headless.turnCount - (headless.rememberedTurn ?? 0) : 0;
+    if (pending > 0) headlessNotes.push(`${pending} to distill`);
     if (opts.discovered) headlessNotes.push('discovered');
     if (nonListening.length > 0) {
       headlessNotes.push(`${nonListening.length} active window${nonListening.length === 1 ? '' : 's'}`);

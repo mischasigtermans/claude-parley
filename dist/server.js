@@ -6654,6 +6654,9 @@ var init_paths = __esm(() => {
     get logsDir() {
       return join(parleyDir(), "logs");
     },
+    get memoryDir() {
+      return join(parleyDir(), "memory");
+    },
     get locksDir() {
       return join(parleyDir(), "locks");
     },
@@ -6672,6 +6675,9 @@ var init_paths = __esm(() => {
     headlessLockFor: (projectId, alias) => join(parleyDir(), "locks", `${projectId}-${alias}.lock`),
     logsProjectDir: (projectId) => join(parleyDir(), "logs", projectId),
     logFor: (projectId, alias) => join(parleyDir(), "logs", projectId, `${alias}.md`),
+    memoryProjectDir: (projectId) => join(parleyDir(), "memory", projectId),
+    memoryFor: (projectId, alias) => join(parleyDir(), "memory", projectId, `${alias}.md`),
+    memoryLockFor: (projectId, alias) => join(parleyDir(), "locks", `${projectId}-${alias}-mem.lock`),
     async projectId(cwd) {
       const remote = await gitRemote(cwd);
       const source = remote ?? cwd;
@@ -6795,7 +6801,8 @@ async function upsertPeer(alias, config2) {
       model: config2.model,
       mcpServers: config2.mcpServers,
       skipPermissions: config2.skipPermissions,
-      type: config2.type
+      type: config2.type,
+      memory: config2.memory
     };
     file.peers[alias] = normalized;
     await writePeers(file);
@@ -6884,6 +6891,7 @@ async function readExtensions() {
         model: typeof p.model === "string" ? p.model : undefined,
         mcpServers: isPlainObject3(p.mcpServers) ? p.mcpServers : undefined,
         skipPermissions: typeof p.skipPermissions === "boolean" ? p.skipPermissions : undefined,
+        memory: typeof p.memory === "boolean" ? p.memory : undefined,
         extension: extName,
         manifestPath
       });
@@ -6937,7 +6945,7 @@ __export(exports_sweep, {
   sweep: () => sweep
 });
 import { readdir as readdir2, rm, stat, unlink as unlink2 } from "node:fs/promises";
-import { join as join3 } from "node:path";
+import { basename, join as join3 } from "node:path";
 async function sweep(opts = {}) {
   const dryRun = opts.dryRun === true;
   const removed = {
@@ -7046,7 +7054,7 @@ async function sweepHeadless(peerAliases, removed, dryRun) {
   }
 }
 async function sweepEmptyProjectDirs(removed, dryRun) {
-  for (const root of [paths.headlessDir, paths.logsDir]) {
+  for (const root of [paths.headlessDir, paths.logsDir, paths.memoryDir]) {
     let entries;
     try {
       entries = await readdir2(root);
@@ -7066,7 +7074,7 @@ async function sweepEmptyProjectDirs(removed, dryRun) {
           continue;
         if (!dryRun)
           await rm(dir, { recursive: true, force: true });
-        removed.projectDirs.push(`${root.endsWith("/headless") ? "headless" : "logs"}/${name}`);
+        removed.projectDirs.push(`${basename(root)}/${name}`);
       } catch (err) {
         if (isErrnoException(err) && err.code === "ENOENT")
           continue;
@@ -15157,8 +15165,17 @@ import { homedir as homedir2 } from "node:os";
 var FALLBACKS = ["headless", "ask"];
 var DEFAULT_CONFIG = {
   fallback: "headless",
-  skipDefault: true
+  skipDefault: true,
+  memory: { default: true, peers: {} }
 };
+function memoryEnabledFor(config2, alias, declared) {
+  const override = config2.memory.peers[alias];
+  if (typeof override === "boolean")
+    return override;
+  if (typeof declared === "boolean")
+    return declared;
+  return config2.memory.default;
+}
 function configPath() {
   return process.env.PARLEY_CONFIG ?? join4(homedir2(), ".claude", "parley", "config.json");
 }
@@ -15191,6 +15208,22 @@ function parseLegacyToml(raw) {
     skipDefault: readTomlBool(raw, "skip_default")
   };
 }
+function parseMemory(raw) {
+  if (!raw || typeof raw !== "object")
+    return;
+  const r = raw;
+  const peers = {};
+  if (r.peers && typeof r.peers === "object") {
+    for (const [k, v] of Object.entries(r.peers)) {
+      if (typeof v === "boolean")
+        peers[k] = v;
+    }
+  }
+  return {
+    default: typeof r.default === "boolean" ? r.default : DEFAULT_CONFIG.memory.default,
+    peers
+  };
+}
 function parseJson(raw) {
   try {
     const obj = JSON.parse(raw);
@@ -15200,7 +15233,8 @@ function parseJson(raw) {
     const permissions = obj.permissions ?? {};
     return {
       fallback: parseFallback(runtime.fallback),
-      skipDefault: typeof permissions.skip_default === "boolean" ? permissions.skip_default : undefined
+      skipDefault: typeof permissions.skip_default === "boolean" ? permissions.skip_default : undefined,
+      memory: parseMemory(obj.memory)
     };
   } catch {
     return {};
@@ -15227,7 +15261,8 @@ async function migrateLegacyTomlIfPresent() {
   }
   const merged = {
     fallback: parsed.fallback ?? DEFAULT_CONFIG.fallback,
-    skipDefault: parsed.skipDefault ?? DEFAULT_CONFIG.skipDefault
+    skipDefault: parsed.skipDefault ?? DEFAULT_CONFIG.skipDefault,
+    memory: DEFAULT_CONFIG.memory
   };
   const target = configPath();
   await mkdir4(dirname2(target), { recursive: true });
@@ -15247,31 +15282,88 @@ async function readParleyConfig() {
     if (migrated) {
       return {
         fallback: envFallback ?? migrated.fallback ?? DEFAULT_CONFIG.fallback,
-        skipDefault: migrated.skipDefault ?? DEFAULT_CONFIG.skipDefault
+        skipDefault: migrated.skipDefault ?? DEFAULT_CONFIG.skipDefault,
+        memory: DEFAULT_CONFIG.memory
       };
     }
     return {
       fallback: envFallback ?? DEFAULT_CONFIG.fallback,
-      skipDefault: DEFAULT_CONFIG.skipDefault
+      skipDefault: DEFAULT_CONFIG.skipDefault,
+      memory: DEFAULT_CONFIG.memory
     };
   }
   const parsed = parseJson(raw);
   return {
     fallback: envFallback ?? parsed.fallback ?? DEFAULT_CONFIG.fallback,
-    skipDefault: parsed.skipDefault ?? DEFAULT_CONFIG.skipDefault
+    skipDefault: parsed.skipDefault ?? DEFAULT_CONFIG.skipDefault,
+    memory: parsed.memory ?? DEFAULT_CONFIG.memory
   };
 }
 function formatConfig(config2) {
   return JSON.stringify({
     runtime: { fallback: config2.fallback },
-    permissions: { skip_default: config2.skipDefault }
+    permissions: { skip_default: config2.skipDefault },
+    memory: { default: config2.memory.default, peers: config2.memory.peers }
   }, null, 2) + `
 `;
 }
 
+// src/registry/memory.ts
+init_paths();
+init_locks();
+import { mkdir as mkdir5, readFile as readFile8, writeFile as writeFile4, unlink as unlink4 } from "node:fs/promises";
+import { dirname as dirname3 } from "node:path";
+function memoryKey(line) {
+  return line.replace(/^- /, "").toLowerCase().slice(0, 60);
+}
+function bulletLines(text) {
+  return text.split(`
+`).map((l) => l.trim()).filter((l) => /^- /.test(l));
+}
+async function readMemory(projectId, alias) {
+  try {
+    return await readFile8(paths.memoryFor(projectId, alias), "utf8");
+  } catch (err) {
+    if (isErrnoException(err) && err.code === "ENOENT")
+      return "";
+    throw err;
+  }
+}
+async function appendMemoryBullets(projectId, alias, bulletsText) {
+  const incoming = bulletLines(bulletsText);
+  if (incoming.length === 0)
+    return { added: 0, deduped: 0 };
+  return withLock(paths.memoryLockFor(projectId, alias), async () => {
+    const existing = await readMemory(projectId, alias);
+    const keys = new Set(bulletLines(existing).map(memoryKey));
+    const toAppend = [];
+    let deduped = 0;
+    for (const bullet of incoming) {
+      const key = memoryKey(bullet);
+      if (keys.has(key)) {
+        deduped++;
+        continue;
+      }
+      keys.add(key);
+      toAppend.push(bullet);
+    }
+    if (toAppend.length > 0) {
+      const file = paths.memoryFor(projectId, alias);
+      await mkdir5(dirname3(file), { recursive: true });
+      const base = existing.replace(/\n*$/, "");
+      const next = (base.length > 0 ? base + `
+` : "") + toAppend.join(`
+`) + `
+`;
+      await writeFile4(file, next, "utf8");
+    }
+    return { added: toAppend.length, deduped };
+  });
+}
+
 // src/routing/queue.ts
 init_paths();
-import { mkdir as mkdir5, readdir as readdir4, readFile as readFile8, writeFile as writeFile4, rename as rename2, access, stat as stat2, unlink as unlink4 } from "node:fs/promises";
+import { mkdir as mkdir6, readdir as readdir4, readFile as readFile9, writeFile as writeFile5, rename as rename2, access, stat as stat2, unlink as unlink5 } from "node:fs/promises";
 import { join as join5 } from "node:path";
 import { randomBytes } from "node:crypto";
 var POLL_INTERVAL_MS = 500;
@@ -15283,7 +15375,7 @@ async function* readMessages(dir) {
     const path = join5(dir, name);
     let raw;
     try {
-      raw = await readFile8(path, "utf8");
+      raw = await readFile9(path, "utf8");
     } catch {
       continue;
     }
@@ -15315,22 +15407,22 @@ async function sendMessage(opts) {
     metadata: { fromProject: opts.fromProject }
   };
   const inbox = paths.sessionInbox(opts.toSessionId);
-  await mkdir5(inbox, { recursive: true });
+  await mkdir6(inbox, { recursive: true });
   const target = join5(inbox, `${id}.json`);
   const tmp = `${target}.${process.pid}.tmp`;
-  await writeFile4(tmp, JSON.stringify(message, null, 2));
+  await writeFile5(tmp, JSON.stringify(message, null, 2));
   await rename2(tmp, target);
   const outbox = paths.sessionOutbox(opts.fromSessionId);
-  await mkdir5(outbox, { recursive: true });
+  await mkdir6(outbox, { recursive: true });
   const outTarget = join5(outbox, `${id}.json`);
   const outTmp = `${outTarget}.${process.pid}.tmp`;
-  await writeFile4(outTmp, JSON.stringify({ ...message, status: "sent" }, null, 2));
+  await writeFile5(outTmp, JSON.stringify({ ...message, status: "sent" }, null, 2));
   await rename2(outTmp, outTarget);
   return id;
 }
 async function waitForMessage(sessionId, predicate, opts = { timeoutMs: 90000 }) {
   const inbox = paths.sessionInbox(sessionId);
-  await mkdir5(inbox, { recursive: true });
+  await mkdir6(inbox, { recursive: true });
   const deadline = Date.now() + opts.timeoutMs;
   const mark = opts.mark ?? "read";
   while (Date.now() < deadline) {
@@ -15344,7 +15436,7 @@ async function waitForMessage(sessionId, predicate, opts = { timeoutMs: 90000 })
       if (mark === "none")
         return msg;
       const targetDir = mark === "in-progress" ? paths.sessionInboxInProgress(sessionId) : paths.sessionInboxRead(sessionId);
-      await mkdir5(targetDir, { recursive: true });
+      await mkdir6(targetDir, { recursive: true });
       const targetPath = join5(targetDir, name);
       try {
         await rename2(sourcePath, targetPath);
@@ -15355,7 +15447,7 @@ async function waitForMessage(sessionId, predicate, opts = { timeoutMs: 90000 })
       }
       const claimed = { ...msg, status: mark };
       const tmp = `${targetPath}.${process.pid}.tmp`;
-      await writeFile4(tmp, JSON.stringify(claimed, null, 2));
+      await writeFile5(tmp, JSON.stringify(claimed, null, 2));
       await rename2(tmp, targetPath);
       return claimed;
     }
@@ -15367,7 +15459,7 @@ async function completeInProgress(sessionId, messageId) {
   const fromPath = join5(paths.sessionInboxInProgress(sessionId), `${messageId}.json`);
   let raw;
   try {
-    raw = await readFile8(fromPath, "utf8");
+    raw = await readFile9(fromPath, "utf8");
   } catch {
     return false;
   }
@@ -15379,12 +15471,12 @@ async function completeInProgress(sessionId, messageId) {
   }
   msg.status = "read";
   const readDir = paths.sessionInboxRead(sessionId);
-  await mkdir5(readDir, { recursive: true });
+  await mkdir6(readDir, { recursive: true });
   const target = join5(readDir, `${messageId}.json`);
   const tmp = `${target}.${process.pid}.tmp`;
-  await writeFile4(tmp, JSON.stringify(msg, null, 2));
+  await writeFile5(tmp, JSON.stringify(msg, null, 2));
   await rename2(tmp, target);
-  await unlink4(fromPath).catch(() => {});
+  await unlink5(fromPath).catch(() => {});
   return true;
 }
 async function recoverStuckInProgress(sessionId, olderThanMs) {
@@ -15398,12 +15490,12 @@ async function recoverStuckInProgress(sessionId, olderThanMs) {
         continue;
       const restored = { ...msg, status: "pending" };
       const inboxDir = paths.sessionInbox(sessionId);
-      await mkdir5(inboxDir, { recursive: true });
+      await mkdir6(inboxDir, { recursive: true });
       const target = join5(inboxDir, name);
       const tmp = `${target}.${process.pid}.tmp`;
-      await writeFile4(tmp, JSON.stringify(restored, null, 2));
+      await writeFile5(tmp, JSON.stringify(restored, null, 2));
       await rename2(tmp, target);
-      await unlink4(path).catch(() => {});
+      await unlink5(path).catch(() => {});
       recovered++;
     } catch {}
   }
@@ -15438,7 +15530,7 @@ async function pruneRead(sessionId, olderThanMs) {
     try {
       const s = await stat2(path);
       if (s.mtimeMs < cutoff) {
-        await unlink4(path);
+        await unlink5(path);
         removed++;
       }
     } catch {}
@@ -15451,9 +15543,9 @@ function sleep2(ms) {
 
 // src/routing/transcript.ts
 init_paths();
-import { appendFile, mkdir as mkdir6, readFile as readFile9 } from "node:fs/promises";
+import { appendFile, mkdir as mkdir7, readFile as readFile10 } from "node:fs/promises";
 async function appendTurn(projectId, alias, fromProject, question, answer, via) {
-  await mkdir6(paths.logsProjectDir(projectId), { recursive: true });
+  await mkdir7(paths.logsProjectDir(projectId), { recursive: true });
   const ts = new Date().toISOString();
   const block = `## ${ts} · from ${fromProject} (${via})
 
@@ -15470,7 +15562,7 @@ ${answer}
 }
 async function readTranscript(projectId, alias, tail) {
   try {
-    const content = await readFile9(paths.logFor(projectId, alias), "utf8");
+    const content = await readFile10(paths.logFor(projectId, alias), "utf8");
     if (tail <= 0)
       return content;
     const blocks = content.split(/^---\s*$/m).filter((b) => b.trim().length > 0);
@@ -15520,7 +15612,8 @@ async function routeAsk(input) {
           claudeSessionId: live.session.claudeSessionId
         });
       }
-      return { alias: peer.alias, tier: "live", answer };
+      const pending = (pointer?.turnCount ?? 0) + 1 - (pointer?.rememberedTurn ?? 0);
+      return { alias: peer.alias, tier: "live", answer, pending };
     }
     case "multiple": {
       const sids = live.sessions.map((s) => `${peer.alias}:${s.sessionId}`).join(", ");
@@ -15541,7 +15634,13 @@ async function routeAsk(input) {
   }
   const cwd = expandHome(peer.config.path);
   const driver = getClaudeDriver();
-  const wrappedPrompt = CONCISE_PREAMBLE + input.question;
+  const memoryOn = memoryEnabledFor(config2, peer.alias, peer.config.memory);
+  const memory = memoryOn ? await readMemory(input.fromProjectId, peer.alias) : "";
+  const memoryBlock = memory.trim() ? `[your memory from past conversations with this project]
+${memory.trim()}
+
+` : "";
+  const wrappedPrompt = CONCISE_PREAMBLE + memoryBlock + input.question;
   const model = peer.config.model;
   const mcpServers = peer.config.mcpServers ?? {};
   const skipPermissions = peer.config.skipPermissions ?? config2.skipDefault;
@@ -15580,11 +15679,13 @@ async function routeAsk(input) {
       createdAt: cached2?.createdAt ?? now,
       lastUsedAt: now,
       turnCount: (cached2?.turnCount ?? 0) + 1,
-      origin: "headless"
+      origin: "headless",
+      rememberedTurn: cached2?.rememberedTurn
     };
     await writeHeadless(next);
     await appendTurn(input.fromProjectId, peer.alias, input.fromProject, input.question, result.output, tier);
-    return { alias: peer.alias, tier, answer: result.output };
+    const pending = next.turnCount - (next.rememberedTurn ?? 0);
+    return { alias: peer.alias, tier, answer: result.output, pending };
   });
 }
 async function updatePointerToLive(opts) {
@@ -15597,7 +15698,8 @@ async function updatePointerToLive(opts) {
     createdAt: opts.pointer?.createdAt ?? now,
     lastUsedAt: now,
     turnCount: (opts.pointer?.turnCount ?? 0) + 1,
-    origin: "live"
+    origin: "live",
+    rememberedTurn: opts.pointer?.rememberedTurn
   };
   await writeHeadless(next);
 }
@@ -15628,6 +15730,17 @@ async function canonicalAlias(ref) {
   const match = live.find((s) => s.alias === aliasPart || s.projectName === aliasPart || s.projectPath === expandHome(aliasPart));
   return match?.alias ?? aliasPart;
 }
+async function declaredMemoryFlag(alias) {
+  const direct = findPeerInFile(alias, await readPeers());
+  if (direct)
+    return direct.config.memory;
+  const ext = (await readExtensions()).find((p) => p.alias === alias);
+  return ext?.memory;
+}
+async function isMemoryEnabled(alias) {
+  const config2 = await readParleyConfig();
+  return memoryEnabledFor(config2, alias, await declaredMemoryFlag(alias));
+}
 async function resolvePeer(ref, peersFile) {
   const colonIdx = ref.indexOf(":");
   const aliasPart = colonIdx >= 0 ? ref.slice(0, colonIdx) : ref;
@@ -15646,7 +15759,8 @@ async function resolvePeer(ref, peersFile) {
         type: extPeer.type,
         model: extPeer.model,
         mcpServers: extPeer.mcpServers,
-        skipPermissions: extPeer.skipPermissions
+        skipPermissions: extPeer.skipPermissions,
+        memory: extPeer.memory
       },
       sessionId: sessionId || undefined
     };
@@ -15756,9 +15870,12 @@ var parleyAsk = {
       timeoutMs: args.timeoutMs
     });
     const prefix = result.tier === "live" ? `[${result.alias} · live]` : `[${result.alias}]`;
+    const nudge = result.pending >= 3 ? `
+
+[parley: ${result.pending} turns with ${result.alias} not yet distilled — call parley_remember ${result.alias} to persist memory]` : "";
     return `${prefix}
 
-${result.answer}`;
+${result.answer}${nudge}`;
   }
 };
 
@@ -16135,6 +16252,9 @@ async function pushRowsForPath(opts) {
     const headless = await readHeadless(opts.fromProjectId, opts.alias);
     const history = headless ? `${headless.turnCount} ${headless.turnCount === 1 ? "turn" : "turns"}` : "-";
     const headlessNotes = [];
+    const pending = headless ? headless.turnCount - (headless.rememberedTurn ?? 0) : 0;
+    if (pending > 0)
+      headlessNotes.push(`${pending} to distill`);
     if (opts.discovered)
       headlessNotes.push("discovered");
     if (nonListening.length > 0) {
@@ -16224,6 +16344,46 @@ var parleyReceiveNext = {
       msg.content
     ].join(`
 `);
+  }
+};
+
+// src/tools/parleyRemember.ts
+var parleyRemember = {
+  name: "parley_remember",
+  description: "Persist durable memory about a peer so future parley_ask calls from this project arrive pre-primed. YOU distill the conversation: read the transcript with parley_log, then pass 3-8 concise `- bullet` takeaways (facts, decisions, preferences, patterns worth remembering) as `bullets`. Bullets are deduped against existing memory and prepended to the peer's next headless prompt. Call this at the end of a productive consultation, or when parley_ask reports pending turns. Memory is keyed per (this project, peer) and survives parley_reset.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      peer: { type: "string", description: "Peer alias whose memory to update." },
+      bullets: {
+        type: "string",
+        description: 'Markdown bullet lines (each starting with "- ") distilled from the transcript. 3-8 concise, self-contained takeaways.'
+      }
+    },
+    required: ["peer", "bullets"],
+    additionalProperties: false
+  },
+  parseArgs(raw) {
+    return {
+      peer: requireString("parley_remember", raw, "peer"),
+      bullets: requireString("parley_remember", raw, "bullets")
+    };
+  },
+  async handler(args, ctx) {
+    const projectId = await ctx.getProjectId();
+    const alias = await canonicalAlias(args.peer);
+    if (!await isMemoryEnabled(alias)) {
+      return `Memory is off for "${args.peer}". Turn it on in ~/.claude/parley/config.json (memory.peers.${alias} = true) or the peer's own config.`;
+    }
+    const stats = await appendMemoryBullets(projectId, alias, args.bullets);
+    const headless = await readHeadless(projectId, alias);
+    if (headless) {
+      await writeHeadless({ ...headless, rememberedTurn: headless.turnCount });
+    }
+    if (stats.added === 0 && stats.deduped === 0) {
+      return `No bullets found in input for "${alias}". Pass lines starting with "- ".`;
+    }
+    return `Remembered ${stats.added} new bullet(s) for "${alias}" (${stats.deduped} duplicate(s) skipped).`;
   }
 };
 
@@ -16323,6 +16483,7 @@ var tools = [
   parleyLog,
   parleyPeers,
   parleyReceiveNext,
+  parleyRemember,
   parleyRemove,
   parleyReset,
   parleyRespond

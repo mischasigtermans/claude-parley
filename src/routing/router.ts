@@ -15,7 +15,8 @@ import { readHeadless, writeHeadless, HeadlessRecord } from '../registry/headles
 import { withLock } from '../registry/locks.js';
 import { paths, expandHome, type ProjectId } from '../registry/paths.js';
 import { getClaudeDriver } from '../drivers/claude.js';
-import { readParleyConfig, type Fallback } from '../config.js';
+import { readParleyConfig, memoryEnabledFor, type Fallback } from '../config.js';
+import { readMemory } from '../registry/memory.js';
 import { sendMessage, waitForMessage, findInboxStatus } from './queue.js';
 import { appendTurn } from './transcript.js';
 import { errorMessage } from '../util/errors.js';
@@ -44,6 +45,8 @@ export interface AskResult {
   alias: string;
   tier: Tier;
   answer: string;
+  /** Turns accumulated since the last parley_remember (turnCount - rememberedTurn). */
+  pending: number;
 }
 
 const CONCISE_PREAMBLE = `[parley directive: answer this query from a peer Claude Code session]
@@ -93,7 +96,8 @@ export async function routeAsk(input: AskInput): Promise<AskResult> {
           claudeSessionId: live.session.claudeSessionId,
         });
       }
-      return { alias: peer.alias, tier: 'live', answer };
+      const pending = (pointer?.turnCount ?? 0) + 1 - (pointer?.rememberedTurn ?? 0);
+      return { alias: peer.alias, tier: 'live', answer, pending };
     }
     case 'multiple': {
       const sids = live.sessions.map((s) => `${peer.alias}:${s.sessionId}`).join(', ');
@@ -127,7 +131,12 @@ export async function routeAsk(input: AskInput): Promise<AskResult> {
   const cwd = expandHome(peer.config.path);
   const driver = getClaudeDriver();
 
-  const wrappedPrompt = CONCISE_PREAMBLE + input.question;
+  const memoryOn = memoryEnabledFor(config, peer.alias, peer.config.memory);
+  const memory = memoryOn ? await readMemory(input.fromProjectId, peer.alias) : '';
+  const memoryBlock = memory.trim()
+    ? `[your memory from past conversations with this project]\n${memory.trim()}\n\n`
+    : '';
+  const wrappedPrompt = CONCISE_PREAMBLE + memoryBlock + input.question;
 
   const model = peer.config.model;
   const mcpServers = peer.config.mcpServers ?? {};
@@ -176,10 +185,12 @@ export async function routeAsk(input: AskInput): Promise<AskResult> {
       lastUsedAt: now,
       turnCount: (cached?.turnCount ?? 0) + 1,
       origin: 'headless',
+      rememberedTurn: cached?.rememberedTurn,
     };
     await writeHeadless(next);
     await appendTurn(input.fromProjectId, peer.alias, input.fromProject, input.question, result.output, tier);
-    return { alias: peer.alias, tier, answer: result.output };
+    const pending = next.turnCount - (next.rememberedTurn ?? 0);
+    return { alias: peer.alias, tier, answer: result.output, pending };
   });
 }
 
@@ -206,6 +217,7 @@ async function updatePointerToLive(opts: {
     lastUsedAt: now,
     turnCount: (opts.pointer?.turnCount ?? 0) + 1,
     origin: 'live',
+    rememberedTurn: opts.pointer?.rememberedTurn,
   };
   await writeHeadless(next);
 }
@@ -252,6 +264,27 @@ export async function canonicalAlias(ref: string): Promise<string> {
   return match?.alias ?? aliasPart;
 }
 
+/**
+ * The peer's own declared memory flag (from peers.json or an extension
+ * manifest), or undefined if unset. `alias` must be canonical.
+ */
+async function declaredMemoryFlag(alias: string): Promise<boolean | undefined> {
+  const direct = findPeerInFile(alias, await readPeers());
+  if (direct) return direct.config.memory;
+  const ext = (await readExtensions()).find((p) => p.alias === alias);
+  return ext?.memory;
+}
+
+/**
+ * Resolve whether durable memory is enabled for a peer (canonical alias),
+ * applying config override → declared flag → config default. Used by the
+ * parley_remember tool; routeAsk resolves inline from its already-read config.
+ */
+export async function isMemoryEnabled(alias: string): Promise<boolean> {
+  const config = await readParleyConfig();
+  return memoryEnabledFor(config, alias, await declaredMemoryFlag(alias));
+}
+
 async function resolvePeer(
   ref: string,
   peersFile: PeersFile,
@@ -279,6 +312,7 @@ async function resolvePeer(
         model: extPeer.model,
         mcpServers: extPeer.mcpServers,
         skipPermissions: extPeer.skipPermissions,
+        memory: extPeer.memory,
       },
       sessionId: sessionId || undefined,
     };

@@ -70,6 +70,7 @@ Parse the argument the user supplied with `/parley` (or the operational request)
      parley discover                  find more recently-used projects to register
      parley add <alias> <path>        register a new peer
      parley log <alias>               read the Q&A transcript with a peer
+     parley remember <peer>           distill the transcript into durable memory
      parley clean                     remove dead sessions and dangling sentinels
    Or just speak naturally: "ask <peer> about X", "what does <peer> think of Y", etc.
    ```
@@ -106,6 +107,16 @@ Call `parley_log` with `alias` and optional `tail` (default 20). Print the trans
 
 Call `parley_reset`. Print confirmation. Use when a peer's headless agent has gotten stuck and you want a fresh session next time.
 
+### `remember <peer>`
+
+Distill the conversation with a peer into durable memory. Parley injects that memory into every future headless ask to the peer from this project, so it stays primed across sessions.
+
+1. Call `parley_log` with the peer alias to read the transcript (use `tail: 0` for the full history).
+2. Distill it yourself into 3-8 concise `- bullet` takeaways: facts, decisions, preferences, and patterns worth remembering. Persona-agnostic, self-contained lines. Skip pleasantries and one-off specifics.
+3. Call `parley_remember` with `peer` and the `bullets` string. It dedupes against existing memory and reports how many were added.
+
+If `parley_remember` reports memory is off for the peer, the user disabled it (in `~/.claude/parley/config.json` under `memory.peers`, or the peer's own config). Don't force it.
+
 ### `clean [--dry-run]`
 
 Call `parley_clean`. Pass `dryRun: true` if `--dry-run` was supplied. Print the result. Removes stale session manifests, dead PID sentinels, and headless caches for peers no longer in `peers.json`. Idempotent. The MCP server runs the same sweep automatically once per hour, so explicit cleans are only needed for ad-hoc inspection.
@@ -137,6 +148,8 @@ Once you have a confirmed peer alias and a user question:
    You don't pick the route. The response prefix tells you when it routed live: `[peer · live]`. Headless (the silent default) shows as just `[peer]`. Resume vs fresh is recorded in the transcript log only.
 
 3. **Display the answer**, then **act on it**. Don't just dump and stop. If the peer told you a type signature, apply it. If they described a migration step, run it. If they asked a follow-up, answer it (`parley_ask` again, same peer; the headless session resumes).
+
+4. **Keep memory current.** If `parley_ask`'s response ends with a `[parley: N turns ... not yet distilled]` nudge, run the `remember` action for that peer (read the transcript, distill, `parley_remember`). Also do this proactively after a productive consultation, or before resuming a peer that `parley_peers` shows with turns "to distill". This is how memory stays reliable without any session hook.
 
 ---
 

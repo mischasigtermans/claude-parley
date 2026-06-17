@@ -469,6 +469,88 @@ describe('routeAsk', () => {
     expect(result.answer).toBe('matched');
   });
 
+  it('injects the memory block between preamble and question when memory exists', async () => {
+    const mock = createMockDriver();
+    _setClaudeDriverForTesting(mock);
+    await writePeers({ peers: { peer1: { path: '/abs/peer1' } } });
+    const { appendMemoryBullets } = await import('../../src/registry/memory.js');
+    await appendMemoryBullets(CALLER_PROJ, 'peer1', '- remembered fact');
+
+    await routeAsk({
+      peerRef: 'peer1',
+      question: 'literal-q',
+      fromSessionId: FROM_SESSION,
+      fromProject: 'caller',
+      fromProjectId: CALLER_PROJ,
+    });
+
+    const prompt = mock.invocations[0].prompt;
+    expect(prompt).toContain('past conversations');
+    expect(prompt).toContain('- remembered fact');
+    expect(prompt.indexOf('parley directive')).toBeLessThan(prompt.indexOf('- remembered fact'));
+    expect(prompt.indexOf('- remembered fact')).toBeLessThan(prompt.indexOf('literal-q'));
+  });
+
+  it('does not inject a memory block when no memory exists', async () => {
+    const mock = createMockDriver();
+    _setClaudeDriverForTesting(mock);
+    await writePeers({ peers: { peer1: { path: '/abs/peer1' } } });
+
+    await routeAsk({
+      peerRef: 'peer1',
+      question: 'literal-q',
+      fromSessionId: FROM_SESSION,
+      fromProject: 'caller',
+      fromProjectId: CALLER_PROJ,
+    });
+    expect(mock.invocations[0].prompt).not.toContain('past conversations');
+  });
+
+  it('skips memory injection when disabled for the peer', async () => {
+    const mock = createMockDriver();
+    _setClaudeDriverForTesting(mock);
+    await writePeers({ peers: { peer1: { path: '/abs/peer1' } } });
+    const { appendMemoryBullets } = await import('../../src/registry/memory.js');
+    await appendMemoryBullets(CALLER_PROJ, 'peer1', '- remembered fact');
+    await writeParleyConfig({ memory: { default: true, peers: { peer1: false } } });
+
+    await routeAsk({
+      peerRef: 'peer1',
+      question: 'literal-q',
+      fromSessionId: FROM_SESSION,
+      fromProject: 'caller',
+      fromProjectId: CALLER_PROJ,
+    });
+    expect(mock.invocations[0].prompt).not.toContain('remembered fact');
+  });
+
+  it('reports pending turns and resets after remember', async () => {
+    const mock = createMockDriver({ output: 'a', sessionId: 'sid' });
+    _setClaudeDriverForTesting(mock);
+    await writePeers({ peers: { peer1: { path: '/abs/peer1' } } });
+
+    const r1 = await routeAsk({
+      peerRef: 'peer1',
+      question: 'q1',
+      fromSessionId: FROM_SESSION,
+      fromProject: 'caller',
+      fromProjectId: CALLER_PROJ,
+    });
+    expect(r1.pending).toBe(1);
+
+    const headless = await readHeadless(CALLER_PROJ, 'peer1');
+    await writeHeadless({ ...headless!, rememberedTurn: headless!.turnCount });
+
+    const r2 = await routeAsk({
+      peerRef: 'peer1',
+      question: 'q2',
+      fromSessionId: FROM_SESSION,
+      fromProject: 'caller',
+      fromProjectId: CALLER_PROJ,
+    });
+    expect(r2.pending).toBe(1);
+  });
+
   it('fallback="ask" throws the no-listener error with cost note', async () => {
     await writePeers({ peers: { peer1: { path: '/abs/peer1' } } });
     await writeParleyConfig({ fallback: 'ask' });

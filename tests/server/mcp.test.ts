@@ -158,6 +158,7 @@ describe('MCP server harness', () => {
       'parley_log',
       'parley_peers',
       'parley_receive_next',
+      'parley_remember',
       'parley_remove',
       'parley_reset',
       'parley_respond',

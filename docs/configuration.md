@@ -32,6 +32,7 @@ Per-peer fields:
 | `model` | string | Optional model override for headless spawns. |
 | `mcpServers` | object | Optional per-peer MCP server overrides. Additive; the peer's own `.claude/settings.local.json` MCPs still load. |
 | `type` | string | Optional classification. Cooperating plugins set this to mark what a peer represents (e.g. `'persona'`). |
+| `memory` | boolean | Whether durable memory is injected/accumulated for this peer. Default unset, in which case `memory.default` from `config.json` applies (default `true`). A `memory.peers` override always wins. |
 
 ## config.json
 
@@ -44,6 +45,10 @@ Optional file: `~/.claude/parley/config.json`. Tunes parley's routing behavior. 
   },
   "permissions": {
     "skip_default": true
+  },
+  "memory": {
+    "default": true,
+    "peers": {}
   }
 }
 ```
@@ -65,6 +70,17 @@ Env override: `PARLEY_FALLBACK`.
 
 Global default for `skipPermissions` on peers that don't set it explicitly. Default `true` (the ergonomic choice for trusted local peers). Flip to `false` to require explicit per-peer opt-in. Per-peer values in `peers.json` always win.
 
+### `memory`
+
+Durable per-peer memory. After a productive consultation, distil it with `/parley remember <peer>`; parley stores the bullets and prepends them to every future headless ask to that peer from the same project.
+
+| Field | Effect |
+|---|---|
+| `memory.default` | Whether memory is on for peers that don't declare their own. Default `true`. |
+| `memory.peers` | Per-peer overrides keyed by canonical alias, e.g. `{ "taylor": false }`. Wins over the peer's declared flag and the default. |
+
+Resolution order: `memory.peers.<alias>` → the peer's own `memory` flag (`peers.json` or an extension manifest, e.g. a persona's `persona.json`) → `memory.default`. When off, parley neither injects nor accumulates memory for that peer. Memory survives `/parley reset`; it's independent of the cached session pointer.
+
 ## Runtime state
 
 Auto-managed under `~/.claude/parley/`:
@@ -76,6 +92,7 @@ Auto-managed under `~/.claude/parley/`:
 | `sessions/<sid>/outbox/` | Sent-message ledger. |
 | `headless/<project_id>/<alias>.json` | The peer's session pointer per (asker, peer). Records the last known `claudeSessionId`, `origin: 'live' \| 'headless'`, turn count. Both transports read and write this file so `--resume` works across them. |
 | `logs/<project_id>/<alias>.md` | Append-only Q&A transcript per (asker, peer). Includes the actual tier (`live` / `headless-fresh` / `headless-resumed`) for each turn. |
+| `memory/<project_id>/<alias>.md` | Durable distilled memory per (asker, peer). A flat `- bullet` list prepended to future headless asks. Written by `parley_remember`; survives `parley_reset`. |
 | `locks/<project_id>-<alias>.lock` | Per-(asker, peer) lock to serialize concurrent asks. |
 | `extensions/<name>.json` | Manifests from other plugins that register peers. See [extensions.md](extensions.md). |
 | `state.json` | Runtime metadata (last-clean timestamp, etc.). |

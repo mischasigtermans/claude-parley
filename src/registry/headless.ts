@@ -18,6 +18,11 @@ export interface HeadlessRecord {
    * --resume <claudeSessionId>.
    */
   origin?: 'live' | 'headless';
+  /**
+   * High-water mark: the turnCount at the last parley_remember. A peer is
+   * "dirty" (has undistilled conversation) when turnCount > rememberedTurn.
+   */
+  rememberedTurn?: number;
 }
 
 export function isHeadlessRecord(v: unknown): v is HeadlessRecord {

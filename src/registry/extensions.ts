@@ -19,6 +19,8 @@ export interface ExtensionPeer {
   mcpServers?: Record<string, McpServerConfig>;
   /** Whether to pass --dangerously-skip-permissions for this peer. */
   skipPermissions?: boolean;
+  /** Whether durable memory is enabled for this peer (default unset → config default). */
+  memory?: boolean;
   /** Extension name (from manifest.name). Shown in parley_peers. */
   extension: string;
   /** Absolute path to the manifest file that declared this peer. */
@@ -40,6 +42,7 @@ interface RawPeer {
   model?: unknown;
   mcpServers?: unknown;
   skipPermissions?: unknown;
+  memory?: unknown;
 }
 
 /**
@@ -93,6 +96,7 @@ export async function readExtensions(): Promise<ExtensionPeer[]> {
         model: typeof p.model === 'string' ? p.model : undefined,
         mcpServers: isPlainObject(p.mcpServers) ? (p.mcpServers as Record<string, McpServerConfig>) : undefined,
         skipPermissions: typeof p.skipPermissions === 'boolean' ? p.skipPermissions : undefined,
+        memory: typeof p.memory === 'boolean' ? p.memory : undefined,
         extension: extName,
         manifestPath,
       });

@@ -35,6 +35,7 @@ export const paths = {
   get headlessDir() { return join(parleyDir(), 'headless'); },
   get extensionsDir() { return join(parleyDir(), 'extensions'); },
   get logsDir() { return join(parleyDir(), 'logs'); },
+  get memoryDir() { return join(parleyDir(), 'memory'); },
   get locksDir() { return join(parleyDir(), 'locks'); },
   get byClaudePidDir() { return join(parleyDir(), 'by-claude-pid'); },
   byClaudePid: (pid: number | string) => join(parleyDir(), 'by-claude-pid', `${pid}.session`),
@@ -53,6 +54,11 @@ export const paths = {
   logsProjectDir: (projectId: ProjectId) => join(parleyDir(), 'logs', projectId),
   logFor: (projectId: ProjectId, alias: string) =>
     join(parleyDir(), 'logs', projectId, `${alias}.md`),
+  memoryProjectDir: (projectId: ProjectId) => join(parleyDir(), 'memory', projectId),
+  memoryFor: (projectId: ProjectId, alias: string) =>
+    join(parleyDir(), 'memory', projectId, `${alias}.md`),
+  memoryLockFor: (projectId: ProjectId, alias: string) =>
+    join(parleyDir(), 'locks', `${projectId}-${alias}-mem.lock`),
   /**
    * Compute the project_id for a CWD. SHA1 of the git remote URL when one is
    * available, fallback to SHA1 of the CWD path. First 12 hex chars. Stable

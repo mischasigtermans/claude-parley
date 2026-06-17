@@ -1,5 +1,5 @@
 import { readdir, rm, stat, unlink } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { paths, expandHome } from '../registry/paths.js';
 import { isProcessAlive, readManifest } from '../registry/sessions.js';
 import { readPeers } from '../registry/peers.js';
@@ -134,16 +134,17 @@ async function sweepHeadless(
 }
 
 /**
- * Remove empty `<projectId>/` subdirectories under `headless/` and `logs/`.
- * Runs after sweepHeadless so any directory left empty by alias pruning gets
- * collected. Treats non-directories at the top level as orphans from the
- * pre-v0.3.0 flat layout and leaves them alone.
+ * Remove empty `<projectId>/` subdirectories under `headless/`, `logs/`, and
+ * `memory/`. Runs after sweepHeadless so any directory left empty by alias
+ * pruning gets collected. Treats non-directories at the top level as orphans
+ * from the pre-v0.3.0 flat layout and leaves them alone. Individual memory
+ * files are never auto-deleted; only fully-empty project dirs are removed.
  */
 async function sweepEmptyProjectDirs(
   removed: SweepRemoved,
   dryRun: boolean,
 ): Promise<void> {
-  for (const root of [paths.headlessDir, paths.logsDir]) {
+  for (const root of [paths.headlessDir, paths.logsDir, paths.memoryDir]) {
     let entries: string[];
     try {
       entries = await readdir(root);
@@ -159,7 +160,7 @@ async function sweepEmptyProjectDirs(
         const contents = await readdir(dir);
         if (contents.length > 0) continue;
         if (!dryRun) await rm(dir, { recursive: true, force: true });
-        removed.projectDirs.push(`${root.endsWith('/headless') ? 'headless' : 'logs'}/${name}`);
+        removed.projectDirs.push(`${basename(root)}/${name}`);
       } catch (err) {
         if (isErrnoException(err) && err.code === 'ENOENT') continue;
         throw err;

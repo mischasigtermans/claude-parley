@@ -18,15 +18,40 @@ export type Fallback = 'headless' | 'ask';
 
 export const FALLBACKS: Fallback[] = ['headless', 'ask'];
 
+export interface MemoryConfig {
+  /** Default memory state for peers that don't declare their own. */
+  default: boolean;
+  /** Per-peer overrides keyed by canonical alias. Wins over everything. */
+  peers: Record<string, boolean>;
+}
+
 export interface ParleyConfig {
   fallback: Fallback;
   skipDefault: boolean;
+  memory: MemoryConfig;
 }
 
 const DEFAULT_CONFIG: ParleyConfig = {
   fallback: 'headless',
   skipDefault: true,
+  memory: { default: true, peers: {} },
 };
+
+/**
+ * Resolve whether memory is on for a peer. Precedence: per-peer config override
+ * (user) → the peer's own declared flag (peers.json / extension manifest) →
+ * the config default.
+ */
+export function memoryEnabledFor(
+  config: ParleyConfig,
+  alias: string,
+  declared: boolean | undefined,
+): boolean {
+  const override = config.memory.peers[alias];
+  if (typeof override === 'boolean') return override;
+  if (typeof declared === 'boolean') return declared;
+  return config.memory.default;
+}
 
 export function configPath(): string {
   return process.env.PARLEY_CONFIG ?? join(homedir(), '.claude', 'parley', 'config.json');
@@ -65,6 +90,21 @@ function parseLegacyToml(raw: string): Partial<ParleyConfig> {
   };
 }
 
+function parseMemory(raw: unknown): MemoryConfig | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const r = raw as { default?: unknown; peers?: unknown };
+  const peers: Record<string, boolean> = {};
+  if (r.peers && typeof r.peers === 'object') {
+    for (const [k, v] of Object.entries(r.peers as Record<string, unknown>)) {
+      if (typeof v === 'boolean') peers[k] = v;
+    }
+  }
+  return {
+    default: typeof r.default === 'boolean' ? r.default : DEFAULT_CONFIG.memory.default,
+    peers,
+  };
+}
+
 function parseJson(raw: string): Partial<ParleyConfig> {
   try {
     const obj = JSON.parse(raw);
@@ -74,6 +114,7 @@ function parseJson(raw: string): Partial<ParleyConfig> {
     return {
       fallback: parseFallback(runtime.fallback),
       skipDefault: typeof permissions.skip_default === 'boolean' ? permissions.skip_default : undefined,
+      memory: parseMemory((obj as { memory?: unknown }).memory),
     };
   } catch {
     return {};
@@ -103,6 +144,7 @@ async function migrateLegacyTomlIfPresent(): Promise<Partial<ParleyConfig> | nul
   const merged: ParleyConfig = {
     fallback: parsed.fallback ?? DEFAULT_CONFIG.fallback,
     skipDefault: parsed.skipDefault ?? DEFAULT_CONFIG.skipDefault,
+    memory: DEFAULT_CONFIG.memory,
   };
   const target = configPath();
   await mkdir(dirname(target), { recursive: true });
@@ -124,11 +166,13 @@ export async function readParleyConfig(): Promise<ParleyConfig> {
       return {
         fallback: envFallback ?? migrated.fallback ?? DEFAULT_CONFIG.fallback,
         skipDefault: migrated.skipDefault ?? DEFAULT_CONFIG.skipDefault,
+        memory: DEFAULT_CONFIG.memory,
       };
     }
     return {
       fallback: envFallback ?? DEFAULT_CONFIG.fallback,
       skipDefault: DEFAULT_CONFIG.skipDefault,
+      memory: DEFAULT_CONFIG.memory,
     };
   }
 
@@ -136,6 +180,7 @@ export async function readParleyConfig(): Promise<ParleyConfig> {
   return {
     fallback: envFallback ?? parsed.fallback ?? DEFAULT_CONFIG.fallback,
     skipDefault: parsed.skipDefault ?? DEFAULT_CONFIG.skipDefault,
+    memory: parsed.memory ?? DEFAULT_CONFIG.memory,
   };
 }
 
@@ -144,6 +189,7 @@ export async function writeParleyConfig(next: Partial<ParleyConfig>): Promise<Pa
   const merged: ParleyConfig = {
     fallback: next.fallback ?? current.fallback,
     skipDefault: next.skipDefault ?? current.skipDefault,
+    memory: next.memory ?? current.memory,
   };
 
   const path = configPath();
@@ -157,6 +203,7 @@ function formatConfig(config: ParleyConfig): string {
     {
       runtime: { fallback: config.fallback },
       permissions: { skip_default: config.skipDefault },
+      memory: { default: config.memory.default, peers: config.memory.peers },
     },
     null,
     2,

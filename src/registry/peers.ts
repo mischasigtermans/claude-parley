@@ -22,6 +22,11 @@ export interface PeerConfig {
    * a peer represents; parley doesn't branch on it, just passes it through.
    */
   type?: string;
+  /**
+   * Whether durable memory is injected/accumulated for this peer. Absent means
+   * "unset"; resolution falls back to the user's config default (see config.ts).
+   */
+  memory?: boolean;
 }
 
 export interface PeersFile {
@@ -75,6 +80,7 @@ export async function upsertPeer(alias: string, config: PeerConfig): Promise<Pee
       mcpServers: config.mcpServers,
       skipPermissions: config.skipPermissions,
       type: config.type,
+      memory: config.memory,
     };
     file.peers[alias] = normalized;
     await writePeers(file);

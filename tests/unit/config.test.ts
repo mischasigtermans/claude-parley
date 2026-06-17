@@ -21,12 +21,13 @@ describe('readParleyConfig', () => {
       '[runtime]\nfallback = "ask"\n\n[permissions]\nskip_default = false\n',
     );
     const c = await readParleyConfig();
-    expect(c).toEqual({ fallback: 'ask', skipDefault: false });
+    expect(c).toEqual({ fallback: 'ask', skipDefault: false, memory: { default: true, peers: {} } });
     await expect(access(tomlPath)).rejects.toMatchObject({ code: 'ENOENT' });
     const json = JSON.parse(await readFile(configPath(), 'utf8'));
     expect(json).toEqual({
       runtime: { fallback: 'ask' },
       permissions: { skip_default: false },
+      memory: { default: true, peers: {} },
     });
   });
 
