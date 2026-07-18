@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.4.2] - 2026-07-18
+
+Hardening for the 0.4.1 binary resolver, after a production `spawn /usr/local/bin/claude ENOENT` that the error message misattributed.
+
+**Fixed**
+
+- **Missing peer cwd reported as a binary error.** Node reports `spawn <binary> ENOENT` when the spawn `cwd` doesn't exist, pointing at the wrong culprit. The driver now checks the peer path before spawning and fails with `peer cwd does not exist: <path>`.
+- **Binary candidates are checked for executability.** The resolver probes candidates with `accessSync(X_OK)` instead of `existsSync`, so a present-but-unexecutable file no longer wins the walk.
+- **Stale cache after a claude auto-update.** A spawn ENOENT drops the cached binary path, so the next ask re-resolves against the updated install instead of failing forever.
+
+**Added**
+
+- The installed app binary (`~/.local/share/claude/ClaudeCode.app/Contents/MacOS/claude`) is a last-resort candidate, for when the launcher symlinks are absent or dangling.
+
 ## [0.4.1] - 2026-07-18
 
 Parley works from Claude Desktop and Cowork, not just the CLI.

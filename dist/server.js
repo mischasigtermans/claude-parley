@@ -14967,7 +14967,7 @@ init_paths();
 // src/drivers/claude.ts
 import { createRequire as createRequire2 } from "node:module";
 import { spawn } from "node:child_process";
-import { existsSync as existsSync3 } from "node:fs";
+import { existsSync as existsSync3, accessSync, constants } from "node:fs";
 import { homedir as homedir2 } from "node:os";
 import { join as join4 } from "node:path";
 var DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
@@ -14983,6 +14983,9 @@ class ClaudeDriver {
   name = "claude";
   inFlight = new Set;
   async spawn(opts) {
+    if (!existsSync3(opts.cwd)) {
+      throw new DriverInvocationError(this.name, `peer cwd does not exist: ${opts.cwd}`);
+    }
     const args = buildClaudeArgs(opts);
     return runClaude(resolveClaudeBin(), args, {
       cwd: opts.cwd,
@@ -15024,14 +15027,23 @@ function claudeBinCandidates(home = homedir2()) {
   return [
     join4(home, ".local", "bin", "claude"),
     join4(home, ".claude", "bin", "claude"),
-    "/usr/local/bin/claude"
+    "/usr/local/bin/claude",
+    join4(home, ".local", "share", "claude", "ClaudeCode.app", "Contents", "MacOS", "claude")
   ];
+}
+function isExecutable(p) {
+  try {
+    accessSync(p, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
 var claudeBin = null;
 function resolveClaudeBin() {
   if (claudeBin)
     return claudeBin;
-  claudeBin = pickClaudeBin(process.env.PARLEY_CLAUDE_BIN, claudeBinCandidates(), existsSync3);
+  claudeBin = pickClaudeBin(process.env.PARLEY_CLAUDE_BIN, claudeBinCandidates(), isExecutable);
   return claudeBin;
 }
 var requireFromHere = createRequire2(import.meta.url);
@@ -15156,6 +15168,8 @@ function runClaude(command, args, opts) {
       resolved2 = true;
       clearTimeout(killTimer);
       cleanup();
+      if (err.code === "ENOENT")
+        claudeBin = null;
       reject(err);
     });
     child.on("close", (code) => {

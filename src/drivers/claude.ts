@@ -1,6 +1,6 @@
 import { createRequire } from 'node:module';
 import { spawn, ChildProcess } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, accessSync, constants } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -33,6 +33,11 @@ export class ClaudeDriver {
   private readonly inFlight = new Set<ChildProcess>();
 
   async spawn(opts: SpawnOptions): Promise<SpawnResult> {
+    // A missing cwd makes node report `spawn <binary> ENOENT`, blaming the
+    // binary for a path problem. Fail with the real cause instead.
+    if (!existsSync(opts.cwd)) {
+      throw new DriverInvocationError(this.name, `peer cwd does not exist: ${opts.cwd}`);
+    }
     const args = buildClaudeArgs(opts);
     return runClaude(resolveClaudeBin(), args, {
       cwd: opts.cwd,
@@ -82,14 +87,26 @@ export function claudeBinCandidates(home: string = homedir()): string[] {
     join(home, '.local', 'bin', 'claude'),
     join(home, '.claude', 'bin', 'claude'),
     '/usr/local/bin/claude',
+    // The launcher symlinks above track the current version; this is the
+    // installed binary itself, in case the symlinks are absent or dangling.
+    join(home, '.local', 'share', 'claude', 'ClaudeCode.app', 'Contents', 'MacOS', 'claude'),
   ];
+}
+
+function isExecutable(p: string): boolean {
+  try {
+    accessSync(p, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 let claudeBin: string | null = null;
 
 export function resolveClaudeBin(): string {
   if (claudeBin) return claudeBin;
-  claudeBin = pickClaudeBin(process.env.PARLEY_CLAUDE_BIN, claudeBinCandidates(), existsSync);
+  claudeBin = pickClaudeBin(process.env.PARLEY_CLAUDE_BIN, claudeBinCandidates(), isExecutable);
   return claudeBin;
 }
 
@@ -253,6 +270,9 @@ function runClaude(command: string, args: string[], opts: RunOptions): Promise<S
       resolved = true;
       clearTimeout(killTimer);
       cleanup();
+      // The cached binary path can go stale when claude auto-updates and
+      // replaces its install. Drop the cache so the next ask re-resolves.
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') claudeBin = null;
       reject(err);
     });
 

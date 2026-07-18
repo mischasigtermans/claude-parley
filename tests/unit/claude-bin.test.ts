@@ -32,6 +32,12 @@ describe('pickClaudeBin', () => {
     expect(pickClaudeBin(undefined, candidates, none)).toBe('claude');
   });
 
+  it('tries the installed app binary when the launcher symlinks are gone', () => {
+    const appBin = join('/home/u', '.local', 'share', 'claude', 'ClaudeCode.app', 'Contents', 'MacOS', 'claude');
+    expect(candidates[candidates.length - 1]).toBe(appBin);
+    expect(pickClaudeBin(undefined, candidates, (p) => p === appBin)).toBe(appBin);
+  });
+
   it('ignores an empty env override', () => {
     expect(pickClaudeBin('', candidates, none)).toBe('claude');
   });
