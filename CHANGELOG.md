@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.4.1] - 2026-07-18
+
+Parley works from Claude Desktop and Cowork, not just the CLI.
+
+**Fixed**
+
+- **Claude binary resolution.** The driver spawned a bare `claude`, which only resolves when the MCP server inherits a shell PATH. Under Desktop and Cowork the server starts from launchd, whose PATH omits `~/.local/bin`, so every headless ask failed with ENOENT. `resolveClaudeBin()` now tries `PARLEY_CLAUDE_BIN`, `~/.local/bin/claude`, `~/.claude/bin/claude` and `/usr/local/bin/claude` before falling back to the bare command, and caches the result. An explicit `PARLEY_CLAUDE_BIN` is trusted as-is so a wrong path fails loudly instead of silently resolving elsewhere.
+- **Desktop sessions were labeled `cli`.** Desktop sets `CLAUDE_CODE_ENTRYPOINT=claude-desktop`, which the platform detection in `register.sh` didn't recognise, so every Desktop session fell through to the CLI label and `parley_peers` reported its source as `Code CLI`. The `claude-desktop` value now maps to `desktop`, and an unrecognised entrypoint records `unknown` (rendered as `-`) instead of guessing `cli`.
+- **jq resolution in hook scripts.** `register.sh`, `cleanup.sh` and `send-message.sh` resolve jq via PATH, which under Desktop is launchd's bare default and misses Homebrew installs at `/opt/homebrew/bin`. A failed lookup meant the session never registered, leaving discovery and messaging with nothing to find. The scripts now append `/opt/homebrew/bin` and `/usr/local/bin` to PATH; a jq that already resolves keeps precedence.
+- **`parley_discover` sees Desktop and Cowork projects.** Discovery only read `~/.claude/projects/`, the CLI's own index, so projects used exclusively from Desktop never showed up. It now also reads parley's session manifests at `~/.claude/parley/sessions/<sid>/manifest.json`, written by the `register.sh` hook on every platform. Results from both sources are merged and deduplicated by path, keeping the most recent timestamp. Ephemeral Cowork output dirs (`local-agent-mode-sessions`) are excluded.
+
 ## [0.4.0] - 2026-06-17
 
 Durable per-peer memory. Parley now carries what you learned from a peer across sessions: distil a conversation into bullets, and every future headless ask to that peer from the same project arrives pre-primed with them. Memory lives in parley (not the personas plugin), applies to every peer, and is opt-out per peer.

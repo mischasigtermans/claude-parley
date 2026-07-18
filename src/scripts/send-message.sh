@@ -6,6 +6,10 @@
 # Outputs: message ID on stdout
 set -euo pipefail
 
+# Hooks launched from Desktop inherit launchd's bare PATH. Append the dirs
+# Homebrew and local installs put jq in; an already-resolvable jq still wins.
+PATH="$PATH:/opt/homebrew/bin:/usr/local/bin"
+
 TARGET_ID="$1"
 MSG_TYPE="$2"
 CONTENT="$3"

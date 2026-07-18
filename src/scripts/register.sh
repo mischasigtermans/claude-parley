@@ -5,6 +5,10 @@
 # Outputs the 6-char parley session ID on stdout.
 set -euo pipefail
 
+# Hooks launched from Desktop inherit launchd's bare PATH. Append the dirs
+# Homebrew and local installs put jq in; an already-resolvable jq still wins.
+PATH="$PATH:/opt/homebrew/bin:/usr/local/bin"
+
 # Headless `claude -p` spawns (parley_ask) inherit this flag from the driver.
 # They are transient queries, not live windows, so they must not register.
 [ -n "${PARLEY_SUPPRESS_REGISTER:-}" ] && exit 0
@@ -28,9 +32,9 @@ detect_platform_mode() {
       ;;
   esac
   case "${CLAUDE_CODE_ENTRYPOINT:-}" in
-    cli)         echo "cli code"        ;;
-    desktop|app) echo "desktop code"    ;;
-    *)           echo "cli code"        ;;
+    cli)                        echo "cli code"     ;;
+    desktop|app|claude-desktop) echo "desktop code" ;;
+    *)                          echo "unknown code" ;;
   esac
 }
 read -r PLATFORM MODE < <(detect_platform_mode)

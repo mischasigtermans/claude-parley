@@ -1,5 +1,8 @@
 import { createRequire } from 'node:module';
 import { spawn, ChildProcess } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 const SHUTDOWN_GRACE_MS = 2000;
@@ -31,7 +34,7 @@ export class ClaudeDriver {
 
   async spawn(opts: SpawnOptions): Promise<SpawnResult> {
     const args = buildClaudeArgs(opts);
-    return runClaude('claude', args, {
+    return runClaude(resolveClaudeBin(), args, {
       cwd: opts.cwd,
       timeoutMs: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       driverName: this.name,
@@ -56,6 +59,43 @@ export class ClaudeDriver {
 }
 
 export type ClaudeDriverShape = Pick<ClaudeDriver, 'spawn' | 'shutdown'>;
+
+/**
+ * Locate the claude executable. Under Desktop and Cowork the MCP server starts
+ * from launchd, whose PATH omits the directories claude installs into, so the
+ * known install locations are probed directly.
+ */
+export function pickClaudeBin(
+  envOverride: string | undefined,
+  candidates: string[],
+  exists: (p: string) => boolean,
+): string {
+  if (envOverride) return envOverride;
+  for (const candidate of candidates) {
+    if (exists(candidate)) return candidate;
+  }
+  return 'claude';
+}
+
+export function claudeBinCandidates(home: string = homedir()): string[] {
+  return [
+    join(home, '.local', 'bin', 'claude'),
+    join(home, '.claude', 'bin', 'claude'),
+    '/usr/local/bin/claude',
+  ];
+}
+
+let claudeBin: string | null = null;
+
+export function resolveClaudeBin(): string {
+  if (claudeBin) return claudeBin;
+  claudeBin = pickClaudeBin(process.env.PARLEY_CLAUDE_BIN, claudeBinCandidates(), existsSync);
+  return claudeBin;
+}
+
+export function _resetClaudeBinForTesting(): void {
+  claudeBin = null;
+}
 
 const requireFromHere = createRequire(import.meta.url);
 

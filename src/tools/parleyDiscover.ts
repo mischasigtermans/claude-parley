@@ -10,7 +10,7 @@ interface Args {
 export const parleyDiscover: ToolDef<Args> = {
   name: 'parley_discover',
   description:
-    "Scan ~/.claude/projects/ for project directories where the user has recently used Claude Code. Returns candidates that aren't yet registered as peers, sorted by last-used time. Useful for onboarding: pick which to add with parley_add. Does not register anything itself.",
+    "Scan Claude Code history for project directories the user has recently worked in, across CLI, Desktop and Cowork. Returns candidates that aren't yet registered as peers, sorted by last-used time. Useful for onboarding: pick which to add with parley_add. Does not register anything itself.",
   inputSchema: {
     type: 'object',
     properties: {
@@ -37,7 +37,7 @@ export const parleyDiscover: ToolDef<Args> = {
 
     if (candidates.length === 0) {
       return all.length === 0
-        ? 'No Claude Code project history found at ~/.claude/projects/.'
+        ? 'No Claude Code project history found on this machine.'
         : 'No new candidates. Every recently-used project is already a registered peer.';
     }
 

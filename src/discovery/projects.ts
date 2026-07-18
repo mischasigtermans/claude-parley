@@ -4,6 +4,7 @@ import { createInterface } from 'node:readline';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { isErrnoException } from '../util/errors.js';
+import { listSessions } from '../registry/sessions.js';
 
 export interface DiscoveredProject {
   path: string;
@@ -13,8 +14,42 @@ export interface DiscoveredProject {
 
 const PROJECTS_DIR = join(homedir(), '.claude', 'projects');
 const SCAN_LINE_LIMIT = 20;
+// Cowork runs each session out of a throwaway output dir, never a real project.
+const EPHEMERAL_MARKER = 'local-agent-mode-sessions';
 
 export async function discoverProjects(): Promise<DiscoveredProject[]> {
+  const [cli, parley] = await Promise.all([scanCliProjects(), scanParleySessions()]);
+  return dedupeByPath([...cli, ...parley]).sort((a, b) => b.lastUsedMs - a.lastUsedMs);
+}
+
+/**
+ * Projects seen by parley's own SessionStart hook. Covers Desktop, which
+ * doesn't write to the CLI's ~/.claude/projects index.
+ */
+export async function scanParleySessions(): Promise<DiscoveredProject[]> {
+  const sessions = await listSessions();
+  const results: DiscoveredProject[] = [];
+  for (const s of sessions) {
+    const path = s.projectPath;
+    if (!path || path.includes(EPHEMERAL_MARKER)) continue;
+    if (!existsSync(path)) continue;
+    const ms = new Date(s.lastHeartbeat).getTime();
+    if (!Number.isFinite(ms)) continue;
+    results.push({ path, lastUsedAt: new Date(ms).toISOString(), lastUsedMs: ms });
+  }
+  return results;
+}
+
+export function dedupeByPath(projects: DiscoveredProject[]): DiscoveredProject[] {
+  const byPath = new Map<string, DiscoveredProject>();
+  for (const p of projects) {
+    const existing = byPath.get(p.path);
+    if (!existing || p.lastUsedMs > existing.lastUsedMs) byPath.set(p.path, p);
+  }
+  return Array.from(byPath.values());
+}
+
+async function scanCliProjects(): Promise<DiscoveredProject[]> {
   let entries: string[];
   try {
     entries = await readdir(PROJECTS_DIR);
@@ -36,7 +71,7 @@ export async function discoverProjects(): Promise<DiscoveredProject[]> {
       lastUsedMs: newest.mtime.getTime(),
     });
   }
-  return results.sort((a, b) => b.lastUsedMs - a.lastUsedMs);
+  return results;
 }
 
 async function newestJsonl(dir: string): Promise<{ path: string; mtime: Date } | null> {

@@ -14967,6 +14967,9 @@ init_paths();
 // src/drivers/claude.ts
 import { createRequire as createRequire2 } from "node:module";
 import { spawn } from "node:child_process";
+import { existsSync as existsSync3 } from "node:fs";
+import { homedir as homedir2 } from "node:os";
+import { join as join4 } from "node:path";
 var DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 var SHUTDOWN_GRACE_MS = 2000;
 
@@ -14981,7 +14984,7 @@ class ClaudeDriver {
   inFlight = new Set;
   async spawn(opts) {
     const args = buildClaudeArgs(opts);
-    return runClaude("claude", args, {
+    return runClaude(resolveClaudeBin(), args, {
       cwd: opts.cwd,
       timeoutMs: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       driverName: this.name,
@@ -15007,6 +15010,29 @@ class ClaudeDriver {
       } catch {}
     }
   }
+}
+function pickClaudeBin(envOverride, candidates, exists) {
+  if (envOverride)
+    return envOverride;
+  for (const candidate of candidates) {
+    if (exists(candidate))
+      return candidate;
+  }
+  return "claude";
+}
+function claudeBinCandidates(home = homedir2()) {
+  return [
+    join4(home, ".local", "bin", "claude"),
+    join4(home, ".claude", "bin", "claude"),
+    "/usr/local/bin/claude"
+  ];
+}
+var claudeBin = null;
+function resolveClaudeBin() {
+  if (claudeBin)
+    return claudeBin;
+  claudeBin = pickClaudeBin(process.env.PARLEY_CLAUDE_BIN, claudeBinCandidates(), existsSync3);
+  return claudeBin;
 }
 var requireFromHere = createRequire2(import.meta.url);
 var resolved = null;
@@ -15160,8 +15186,8 @@ function truncate(s, max = 500) {
 
 // src/config.ts
 import { mkdir as mkdir4, readFile as readFile7, rm as rm2, writeFile as writeFile3 } from "node:fs/promises";
-import { dirname as dirname2, join as join4 } from "node:path";
-import { homedir as homedir2 } from "node:os";
+import { dirname as dirname2, join as join5 } from "node:path";
+import { homedir as homedir3 } from "node:os";
 var FALLBACKS = ["headless", "ask"];
 var DEFAULT_CONFIG = {
   fallback: "headless",
@@ -15177,14 +15203,14 @@ function memoryEnabledFor(config2, alias, declared) {
   return config2.memory.default;
 }
 function configPath() {
-  return process.env.PARLEY_CONFIG ?? join4(homedir2(), ".claude", "parley", "config.json");
+  return process.env.PARLEY_CONFIG ?? join5(homedir3(), ".claude", "parley", "config.json");
 }
 function legacyTomlPath() {
   const explicit = process.env.PARLEY_CONFIG;
   if (explicit && explicit.endsWith(".json")) {
     return explicit.replace(/\.json$/, ".toml");
   }
-  return join4(homedir2(), ".claude", "parley", "config.toml");
+  return join5(homedir3(), ".claude", "parley", "config.toml");
 }
 function parseFallback(value) {
   if (typeof value !== "string")
@@ -15364,7 +15390,7 @@ async function appendMemoryBullets(projectId, alias, bulletsText) {
 // src/routing/queue.ts
 init_paths();
 import { mkdir as mkdir6, readdir as readdir4, readFile as readFile9, writeFile as writeFile5, rename as rename2, access, stat as stat2, unlink as unlink5 } from "node:fs/promises";
-import { join as join5 } from "node:path";
+import { join as join6 } from "node:path";
 import { randomBytes } from "node:crypto";
 var POLL_INTERVAL_MS = 500;
 async function* readMessages(dir) {
@@ -15372,7 +15398,7 @@ async function* readMessages(dir) {
   for (const name of entries) {
     if (!name.endsWith(".json"))
       continue;
-    const path = join5(dir, name);
+    const path = join6(dir, name);
     let raw;
     try {
       raw = await readFile9(path, "utf8");
@@ -15408,13 +15434,13 @@ async function sendMessage(opts) {
   };
   const inbox = paths.sessionInbox(opts.toSessionId);
   await mkdir6(inbox, { recursive: true });
-  const target = join5(inbox, `${id}.json`);
+  const target = join6(inbox, `${id}.json`);
   const tmp = `${target}.${process.pid}.tmp`;
   await writeFile5(tmp, JSON.stringify(message, null, 2));
   await rename2(tmp, target);
   const outbox = paths.sessionOutbox(opts.fromSessionId);
   await mkdir6(outbox, { recursive: true });
-  const outTarget = join5(outbox, `${id}.json`);
+  const outTarget = join6(outbox, `${id}.json`);
   const outTmp = `${outTarget}.${process.pid}.tmp`;
   await writeFile5(outTmp, JSON.stringify({ ...message, status: "sent" }, null, 2));
   await rename2(outTmp, outTarget);
@@ -15437,7 +15463,7 @@ async function waitForMessage(sessionId, predicate, opts = { timeoutMs: 90000 })
         return msg;
       const targetDir = mark === "in-progress" ? paths.sessionInboxInProgress(sessionId) : paths.sessionInboxRead(sessionId);
       await mkdir6(targetDir, { recursive: true });
-      const targetPath = join5(targetDir, name);
+      const targetPath = join6(targetDir, name);
       try {
         await rename2(sourcePath, targetPath);
       } catch (err) {
@@ -15456,7 +15482,7 @@ async function waitForMessage(sessionId, predicate, opts = { timeoutMs: 90000 })
   return null;
 }
 async function completeInProgress(sessionId, messageId) {
-  const fromPath = join5(paths.sessionInboxInProgress(sessionId), `${messageId}.json`);
+  const fromPath = join6(paths.sessionInboxInProgress(sessionId), `${messageId}.json`);
   let raw;
   try {
     raw = await readFile9(fromPath, "utf8");
@@ -15472,7 +15498,7 @@ async function completeInProgress(sessionId, messageId) {
   msg.status = "read";
   const readDir = paths.sessionInboxRead(sessionId);
   await mkdir6(readDir, { recursive: true });
-  const target = join5(readDir, `${messageId}.json`);
+  const target = join6(readDir, `${messageId}.json`);
   const tmp = `${target}.${process.pid}.tmp`;
   await writeFile5(tmp, JSON.stringify(msg, null, 2));
   await rename2(tmp, target);
@@ -15491,7 +15517,7 @@ async function recoverStuckInProgress(sessionId, olderThanMs) {
       const restored = { ...msg, status: "pending" };
       const inboxDir = paths.sessionInbox(sessionId);
       await mkdir6(inboxDir, { recursive: true });
-      const target = join5(inboxDir, name);
+      const target = join6(inboxDir, name);
       const tmp = `${target}.${process.pid}.tmp`;
       await writeFile5(tmp, JSON.stringify(restored, null, 2));
       await rename2(tmp, target);
@@ -15509,7 +15535,7 @@ async function findInboxStatus(sessionId, messageId) {
   ];
   for (const { status, dir } of candidates) {
     try {
-      await access(join5(dir, `${messageId}.json`));
+      await access(join6(dir, `${messageId}.json`));
       return status;
     } catch {}
   }
@@ -15526,7 +15552,7 @@ async function pruneRead(sessionId, olderThanMs) {
   const cutoff = Date.now() - olderThanMs;
   let removed = 0;
   for (const entry of entries) {
-    const path = join5(readDir, entry);
+    const path = join6(readDir, entry);
     try {
       const s = await stat2(path);
       if (s.mtimeMs < cutoff) {
@@ -15959,14 +15985,45 @@ function formatReport(result, totalRemoved, now) {
 }
 
 // src/discovery/projects.ts
+init_sessions();
 import { readdir as readdir5, stat as stat3 } from "node:fs/promises";
-import { createReadStream, existsSync as existsSync3 } from "node:fs";
+import { createReadStream, existsSync as existsSync4 } from "node:fs";
 import { createInterface } from "node:readline";
-import { homedir as homedir3 } from "node:os";
-import { join as join6 } from "node:path";
-var PROJECTS_DIR = join6(homedir3(), ".claude", "projects");
+import { homedir as homedir4 } from "node:os";
+import { join as join7 } from "node:path";
+var PROJECTS_DIR = join7(homedir4(), ".claude", "projects");
 var SCAN_LINE_LIMIT = 20;
+var EPHEMERAL_MARKER = "local-agent-mode-sessions";
 async function discoverProjects() {
+  const [cli, parley] = await Promise.all([scanCliProjects(), scanParleySessions()]);
+  return dedupeByPath([...cli, ...parley]).sort((a, b) => b.lastUsedMs - a.lastUsedMs);
+}
+async function scanParleySessions() {
+  const sessions = await listSessions();
+  const results = [];
+  for (const s of sessions) {
+    const path = s.projectPath;
+    if (!path || path.includes(EPHEMERAL_MARKER))
+      continue;
+    if (!existsSync4(path))
+      continue;
+    const ms = new Date(s.lastHeartbeat).getTime();
+    if (!Number.isFinite(ms))
+      continue;
+    results.push({ path, lastUsedAt: new Date(ms).toISOString(), lastUsedMs: ms });
+  }
+  return results;
+}
+function dedupeByPath(projects) {
+  const byPath = new Map;
+  for (const p of projects) {
+    const existing = byPath.get(p.path);
+    if (!existing || p.lastUsedMs > existing.lastUsedMs)
+      byPath.set(p.path, p);
+  }
+  return Array.from(byPath.values());
+}
+async function scanCliProjects() {
   let entries;
   try {
     entries = await readdir5(PROJECTS_DIR);
@@ -15977,12 +16034,12 @@ async function discoverProjects() {
   }
   const results = [];
   for (const entry of entries) {
-    const dir = join6(PROJECTS_DIR, entry);
+    const dir = join7(PROJECTS_DIR, entry);
     const newest = await newestJsonl(dir);
     if (!newest)
       continue;
     const cwd = await extractCwd(newest.path);
-    if (!cwd || !existsSync3(cwd))
+    if (!cwd || !existsSync4(cwd))
       continue;
     results.push({
       path: cwd,
@@ -15990,7 +16047,7 @@ async function discoverProjects() {
       lastUsedMs: newest.mtime.getTime()
     });
   }
-  return results.sort((a, b) => b.lastUsedMs - a.lastUsedMs);
+  return results;
 }
 async function newestJsonl(dir) {
   let entries;
@@ -16003,7 +16060,7 @@ async function newestJsonl(dir) {
   for (const e of entries) {
     if (!e.endsWith(".jsonl"))
       continue;
-    const p = join6(dir, e);
+    const p = join7(dir, e);
     try {
       const s = await stat3(p);
       if (!best || s.mtime > best.mtime)
@@ -16062,7 +16119,7 @@ init_peers();
 init_paths();
 var parleyDiscover = {
   name: "parley_discover",
-  description: "Scan ~/.claude/projects/ for project directories where the user has recently used Claude Code. Returns candidates that aren't yet registered as peers, sorted by last-used time. Useful for onboarding: pick which to add with parley_add. Does not register anything itself.",
+  description: "Scan Claude Code history for project directories the user has recently worked in, across CLI, Desktop and Cowork. Returns candidates that aren't yet registered as peers, sorted by last-used time. Useful for onboarding: pick which to add with parley_add. Does not register anything itself.",
   inputSchema: {
     type: "object",
     properties: {
@@ -16084,7 +16141,7 @@ var parleyDiscover = {
     const all = await discoverProjects();
     const candidates = all.filter((p) => !registered.has(p.path)).slice(0, limit);
     if (candidates.length === 0) {
-      return all.length === 0 ? "No Claude Code project history found at ~/.claude/projects/." : "No new candidates. Every recently-used project is already a registered peer.";
+      return all.length === 0 ? "No Claude Code project history found on this machine." : "No new candidates. Every recently-used project is already a registered peer.";
     }
     const now = new Date;
     const lines = ["Recently active Claude Code projects on this machine:", ""];

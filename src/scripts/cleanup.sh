@@ -4,6 +4,10 @@
 # view of us. Removes the session directory.
 set -euo pipefail
 
+# Hooks launched from Desktop inherit launchd's bare PATH. Append the dirs
+# Homebrew and local installs put jq in; an already-resolvable jq still wins.
+PATH="$PATH:/opt/homebrew/bin:/usr/local/bin"
+
 # Headless spawns never registered (see register.sh), so they have nothing to
 # tear down. Skip to avoid touching another session's state.
 [ -n "${PARLEY_SUPPRESS_REGISTER:-}" ] && exit 0

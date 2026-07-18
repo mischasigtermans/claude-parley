@@ -8,7 +8,7 @@ Parley exposes two surfaces: slash commands for explicit operations, and natural
 |---|---|
 | `/parley` | Discovery menu. Auto-cleans hourly, lists peers, suggests next moves. |
 | `/parley peers` (or `list`) | List configured peers and any live sessions on the machine. |
-| `/parley discover` | Scan `~/.claude/projects` for projects you've used recently and aren't yet registered. |
+| `/parley discover` | Scan Claude Code history for projects you've used recently and aren't yet registered. |
 | `/parley ask <peer> <question>` | One-shot query. Silent unless the peer is listening. |
 | `/parley listen` | Make this window the live answerer for its project and enter the receive loop. |
 | `/parley add <alias> <path> [description]` | Register a peer in `peers.json`. |
