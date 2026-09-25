@@ -31,3 +31,9 @@ Every turn is appended to a transcript at `~/.claude/parley/logs/<project_id>/<p
 In live mode, `parley_receive_next` moves messages into `inbox/in-progress/` when consumed but not yet responded. Every 30 seconds the heartbeat sweep returns any message older than 10 minutes back to `inbox/` as pending.
 
 If the listener consumes a query but never calls `parley_respond` (crash, error, confusion), the next `parley_receive_next` redelivers it. Responders need to be idempotent for repeat queries.
+
+## Rooms
+
+`parley_gather` convenes several peers around one question. Round 1 is blind: every peer gets only the question, in parallel, so nobody anchors on the first answer. From round 2 each peer speaks in turn and sees only what was said since its last turn (its own turns and `PASS` turns excluded). A peer that was `@alias`-mentioned speaks first in the next round. A peer replies `PASS` when it has nothing to add; when everyone passes in a round the room is `converged`. Advisors are told the convening project's path and may read it to check facts (`projectAccess: false` withholds it). Peers passed as `grounders` take a verifying role instead of advising: they check the others' factual claims against their own code and data, correct wrong ones with file references, run checks the advisors propose, and speak first each round. `parley_room say` posts a chair message that every peer sees on its next turn; `parley_room continue` runs more rounds.
+
+Each turn goes through `routeAsk`, so it uses the peer's normal per-(project, peer) session, transcript and memory. Rooms live at `~/.claude/parley/rooms/<project_id>/<room>/` as `state.json` (source of truth) and `transcript.md` (human-readable, append-only).

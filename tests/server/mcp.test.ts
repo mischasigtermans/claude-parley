@@ -154,6 +154,7 @@ describe('MCP server harness', () => {
       'parley_ask',
       'parley_clean',
       'parley_discover',
+      'parley_gather',
       'parley_listen',
       'parley_log',
       'parley_peers',
@@ -162,6 +163,7 @@ describe('MCP server harness', () => {
       'parley_remove',
       'parley_reset',
       'parley_respond',
+      'parley_room',
     ]);
   });
 
@@ -404,5 +406,58 @@ describe('MCP server harness', () => {
     expect(text).toContain('1 turn');
     expect(text).not.toMatch(/\| 1 turns /);
     expect(text).toContain('7 turns');
+  });
+
+  it('parley_gather and parley_room round-trip through the server with the mock driver', async () => {
+    const mockCfg = join(t.tmp.root, 'mock.json');
+    const logFile = join(t.tmp.root, 'spawns.jsonl');
+    await writeFile(mockCfg, JSON.stringify({ output: 'mock-take', sessionId: 'mock-sid', logFile }));
+    h = await startHarness({ parleyDir: t.tmp.root, mockConfigPath: mockCfg });
+
+    await h.send('tools/call', { name: 'parley_add', arguments: { alias: 'a', path: '/abs/a' } });
+    await h.send('tools/call', { name: 'parley_add', arguments: { alias: 'b', path: '/abs/b' } });
+
+    const gather = await h.send('tools/call', {
+      name: 'parley_gather',
+      arguments: { peers: ['a', 'b'], question: 'Ship or cut?', room: 'e2e', rounds: 2 },
+    });
+    const text = callContent(gather);
+    expect(text).toContain('[room e2e · open · round 2]');
+    expect(text).toContain('### Round 2');
+    expect(text).toContain('**a:** mock-take');
+
+    const spawns = (await readFile(logFile, 'utf8')).trim().split('\n').map((l) => JSON.parse(l));
+    expect(spawns).toHaveLength(4);
+    expect(spawns.filter((s) => s.prompt.includes('blind round'))).toHaveLength(2);
+    expect(spawns.filter((s) => s.prompt.includes('Since your last turn'))).toHaveLength(2);
+
+    const say = await h.send('tools/call', {
+      name: 'parley_room',
+      arguments: { action: 'say', room: 'e2e', message: 'Budget is fixed.' },
+    });
+    expect(callContent(say)).toMatch(/Posted to room "e2e"/);
+
+    await writeFile(mockCfg, JSON.stringify({ output: 'PASS', sessionId: 'mock-sid', logFile }));
+    const cont = await h.send('tools/call', {
+      name: 'parley_room',
+      arguments: { action: 'continue', room: 'e2e' },
+    });
+    expect(callContent(cont)).toContain('room converged');
+    const after = (await readFile(logFile, 'utf8')).trim().split('\n').map((l) => JSON.parse(l));
+    expect(after).toHaveLength(6);
+    expect(after[4].prompt).toContain('**test (chair):** Budget is fixed.');
+
+    const list = await h.send('tools/call', { name: 'parley_room', arguments: { action: 'list' } });
+    expect(callContent(list)).toMatch(/^e2e  converged  round 3/);
+
+    const log = await h.send('tools/call', { name: 'parley_room', arguments: { action: 'log', room: 'e2e' } });
+    expect(callContent(log)).toContain('# Room: e2e');
+
+    const close = await h.send('tools/call', { name: 'parley_room', arguments: { action: 'close', room: 'e2e' } });
+    expect(callContent(close)).toMatch(/closed/);
+
+    const bad = await h.send('tools/call', { name: 'parley_room', arguments: { action: 'say', room: 'e2e', message: 'x' } });
+    expect(bad.isError).toBe(true);
+    expect(callContent(bad)).toMatch(/closed/);
   });
 });

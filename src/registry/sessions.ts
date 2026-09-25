@@ -122,17 +122,16 @@ let sweepInFlight: Promise<void> | null = null;
  * callers within the same MCP server process.
  */
 async function maybeAutoSweep(): Promise<void> {
-  if (sweepInFlight) return sweepInFlight;
+  sweepInFlight ??= autoSweepIfDue().finally(() => { sweepInFlight = null; });
+  return sweepInFlight;
+}
+
+async function autoSweepIfDue(): Promise<void> {
   const state = await readState();
   if (state.lastCleanAt) {
     const last = new Date(state.lastCleanAt).getTime();
     if (Number.isFinite(last) && Date.now() - last < AUTO_SWEEP_INTERVAL_MS) return;
   }
-  sweepInFlight = runAutoSweep().finally(() => { sweepInFlight = null; });
-  return sweepInFlight;
-}
-
-async function runAutoSweep(): Promise<void> {
   try {
     // Dynamic import avoids a sessions↔sweep import cycle.
     const { sweep } = await import('../cleanup/sweep.js');

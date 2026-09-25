@@ -1,6 +1,6 @@
 ---
 name: parley
-description: Lets one Claude Code project consult another on the same machine. Activates when the user references another project or peer agent by name ("ask <peer> about X", "what does <peer> think") or invokes `/parley` to manage peers (list, discover, add, listen, ask, log). Drives the listen-mode receive loop when this session answers peers. All routing goes through the `parley` MCP server.
+description: Lets one Claude Code project consult another on the same machine. Activates when the user references another project or peer agent by name ("ask <peer> about X", "what does <peer> think"), wants several peers to discuss something together ("let steve and taylor debate X", "gather the personas on Y"), or invokes `/parley` to manage peers (list, discover, add, listen, ask, log, gather, room). Drives the listen-mode receive loop when this session answers peers. All routing goes through the `parley` MCP server.
 ---
 
 # Parley
@@ -13,7 +13,7 @@ State and routing are owned by the `parley` MCP server. **Use the `parley_*` too
 
 Two paths. Decide which one applies before reading further.
 
-1. **Awareness path.** The user named another project or peer in natural language ("ask <peer> how they handle X", "what does <peer> think", "pull the spec from <peer>"). Take the *resolve → ask* sequence below. Most common case.
+1. **Awareness path.** The user named another project or peer in natural language ("ask <peer> how they handle X", "what does <peer> think", "pull the spec from <peer>"). Take the *resolve → ask* sequence below. Most common case. If the user names two or more peers and wants them to discuss, debate, or weigh in together, take the *gather sequence* instead.
 2. **Explicit path.** The user typed `/parley`, `/parley <action>`, or asked operationally ("list peers", "listen", "discover projects"). Jump to *Actions*.
 
 If the user typed `/parley` with no argument, run the *discovery menu* under Actions.
@@ -70,6 +70,8 @@ Parse the argument the user supplied with `/parley` (or the operational request)
      parley discover                  find more recently-used projects to register
      parley add <alias> <path>        register a new peer
      parley log <alias>               read the Q&A transcript with a peer
+     parley gather <peer> <peer>... <question>   run a structured group discussion (add the project as grounder)
+     parley room list|log|say|continue|close     manage discussion rooms
      parley remember <peer>           distill the transcript into durable memory
      parley clean                     remove dead sessions and dangling sentinels
    Or just speak naturally: "ask <peer> about X", "what does <peer> think of Y", etc.
@@ -82,6 +84,14 @@ Call `parley_peers`. Print the result.
 ### `ask <peer> <question…>`
 
 Run the *ask sequence* below with `peer` = first argument, `question` = the remainder.
+
+### `gather <peer> <peer>... <question…>`
+
+Run the *gather sequence* below with `peers` = every leading argument that matches a peer alias, `question` = the remainder.
+
+### `room <action> [room] [message]`
+
+Call `parley_room` with the action: `list` (rooms for this project), `log <room>` (full transcript), `say <room> <message>` (post a chair message), `continue <room> [rounds]` (run more rounds), `close <room>`. Print the result. After `continue`, synthesize the new turns the same way as after gather.
 
 ### `discover`
 
@@ -152,6 +162,20 @@ Once you have a confirmed peer alias and a user question:
 4. **Keep memory current.** If `parley_ask`'s response ends with a `[parley: N turns ... not yet distilled]` nudge, run the `remember` action for that peer (read the transcript, distill, `parley_remember`). Also do this proactively after a productive consultation, or before resuming a peer that `parley_peers` shows with turns "to distill". This is how memory stays reliable without any session hook.
 
 ---
+
+## Gather sequence (group discussion)
+
+Use when the user wants two or more peers to discuss something together rather than answer one by one. Personas and project peers mix freely.
+
+1. **Confirm the aliases** with `parley_peers`. Every participant must be a listed peer.
+2. **Craft the question** as a self-contained prompt, same rules as the ask sequence. Peers see only the question and the room transcript.
+3. **Call `parley_gather`** with `peers` and `question`. Default 3 rounds. Round 1 is blind (everyone answers independently, in parallel), later rounds are sequential with each peer seeing what was said since its last turn. Peers reply `PASS` when they have nothing to add; the room converges when everyone passes. Advisors are told this project's path and may read it to check facts (`projectAccess: false` withholds it).
+   - **When the question is about a codebase, add its project peer as a grounder**: `grounders: ['<project>']`. A grounder doesn't advise; it verifies the others' factual claims against its own code and data, corrects wrong ones with file references, and runs checks the advisors propose. It speaks first each round so the advisors argue over checked facts, not over the chair's framing. If the project isn't a peer yet, `parley_add` it first.
+   - **You are the chair, and you have the code too.** If a participant disputes a fact or asks for a measurement you can run, run it and post the result with `parley_room say` before `parley_room continue`. Don't let a checkable claim ride through three rounds unchecked.
+4. **Synthesize.** The tool returns the whole transcript. Don't dump it. Report where the participants agree, where they disagree and why, and what each one's strongest point was. Quote a line when it carries the argument. Then give the user your own read.
+5. **Keep it going when useful.** If the user has a follow-up or wants to steer, `parley_room say` posts it as chair, then `parley_room continue` runs another round. `parley_room log` shows the full transcript. `parley_room close` ends it.
+
+Every peer turn runs through the same per-peer session as `parley_ask`, so the peer's memory and transcript stay continuous. Distil with `remember` afterwards as usual.
 
 ## Listen loop (`/parley listen`)
 

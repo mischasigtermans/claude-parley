@@ -37,6 +37,7 @@ export const paths = {
   get logsDir() { return join(parleyDir(), 'logs'); },
   get memoryDir() { return join(parleyDir(), 'memory'); },
   get locksDir() { return join(parleyDir(), 'locks'); },
+  get roomsDir() { return join(parleyDir(), 'rooms'); },
   get byClaudePidDir() { return join(parleyDir(), 'by-claude-pid'); },
   byClaudePid: (pid: number | string) => join(parleyDir(), 'by-claude-pid', `${pid}.session`),
   sessionDir: (sid: string) => join(parleyDir(), 'sessions', sid),
@@ -59,6 +60,14 @@ export const paths = {
     join(parleyDir(), 'memory', projectId, `${alias}.md`),
   memoryLockFor: (projectId: ProjectId, alias: string) =>
     join(parleyDir(), 'locks', `${projectId}-${alias}-mem.lock`),
+  roomsProjectDir: (projectId: ProjectId) => join(parleyDir(), 'rooms', projectId),
+  roomDir: (projectId: ProjectId, room: string) => join(parleyDir(), 'rooms', projectId, room),
+  roomState: (projectId: ProjectId, room: string) =>
+    join(parleyDir(), 'rooms', projectId, room, 'state.json'),
+  roomTranscript: (projectId: ProjectId, room: string) =>
+    join(parleyDir(), 'rooms', projectId, room, 'transcript.md'),
+  roomLockFor: (projectId: ProjectId, room: string) =>
+    join(parleyDir(), 'locks', `${projectId}-room-${room}.lock`),
   /**
    * Compute the project_id for a CWD. SHA1 of the git remote URL when one is
    * available, fallback to SHA1 of the CWD path. First 12 hex chars. Stable

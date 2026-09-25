@@ -6660,6 +6660,9 @@ var init_paths = __esm(() => {
     get locksDir() {
       return join(parleyDir(), "locks");
     },
+    get roomsDir() {
+      return join(parleyDir(), "rooms");
+    },
     get byClaudePidDir() {
       return join(parleyDir(), "by-claude-pid");
     },
@@ -6678,6 +6681,11 @@ var init_paths = __esm(() => {
     memoryProjectDir: (projectId) => join(parleyDir(), "memory", projectId),
     memoryFor: (projectId, alias) => join(parleyDir(), "memory", projectId, `${alias}.md`),
     memoryLockFor: (projectId, alias) => join(parleyDir(), "locks", `${projectId}-${alias}-mem.lock`),
+    roomsProjectDir: (projectId) => join(parleyDir(), "rooms", projectId),
+    roomDir: (projectId, room) => join(parleyDir(), "rooms", projectId, room),
+    roomState: (projectId, room) => join(parleyDir(), "rooms", projectId, room, "state.json"),
+    roomTranscript: (projectId, room) => join(parleyDir(), "rooms", projectId, room, "transcript.md"),
+    roomLockFor: (projectId, room) => join(parleyDir(), "locks", `${projectId}-room-${room}.lock`),
     async projectId(cwd) {
       const remote = await gitRemote(cwd);
       const source = remote ?? cwd;
@@ -7234,20 +7242,18 @@ async function listLiveSessions() {
   return sessions.filter((s) => now - new Date(s.lastHeartbeat).getTime() < STALE_AFTER_MS);
 }
 async function maybeAutoSweep() {
-  if (sweepInFlight)
-    return sweepInFlight;
+  sweepInFlight ??= autoSweepIfDue().finally(() => {
+    sweepInFlight = null;
+  });
+  return sweepInFlight;
+}
+async function autoSweepIfDue() {
   const state = await readState();
   if (state.lastCleanAt) {
     const last = new Date(state.lastCleanAt).getTime();
     if (Number.isFinite(last) && Date.now() - last < AUTO_SWEEP_INTERVAL_MS)
       return;
   }
-  sweepInFlight = runAutoSweep().finally(() => {
-    sweepInFlight = null;
-  });
-  return sweepInFlight;
-}
-async function runAutoSweep() {
   try {
     const { sweep: sweep2 } = await Promise.resolve().then(() => (init_sweep(), exports_sweep));
     await sweep2({ dryRun: false });
@@ -14758,7 +14764,7 @@ function resolveSession(input = {}) {
 function parentCwd(ppid) {
   if (!ppid || ppid <= 1)
     return null;
-  const out = bestEffortExec("lsof", ["-p", String(ppid), "-d", "cwd", "-F", "n"]);
+  const out = bestEffortExec("lsof", ["-a", "-p", String(ppid), "-d", "cwd", "-F", "n"]);
   if (!out)
     return null;
   const lines = out.split(`
@@ -15781,6 +15787,9 @@ async function isMemoryEnabled(alias) {
   const config2 = await readParleyConfig();
   return memoryEnabledFor(config2, alias, await declaredMemoryFlag(alias));
 }
+async function peerExists(ref) {
+  return await resolvePeer(ref, await readPeers()) !== null;
+}
 async function resolvePeer(ref, peersFile) {
   const colonIdx = ref.indexOf(":");
   const aliasPart = colonIdx >= 0 ? ref.slice(0, colonIdx) : ref;
@@ -16170,6 +16179,390 @@ var parleyDiscover = {
   }
 };
 
+// src/registry/rooms.ts
+init_paths();
+init_locks();
+import { appendFile as appendFile2, mkdir as mkdir8, readFile as readFile11, readdir as readdir6, rm as rm3 } from "node:fs/promises";
+var ROOM_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
+
+class InvalidRoomNameError extends Error {
+  constructor(room) {
+    super(`parley: invalid room name "${room}". Use lowercase letters, digits and hyphens.`);
+  }
+}
+function assertValidRoomName(room) {
+  if (!ROOM_NAME.test(room))
+    throw new InvalidRoomNameError(room);
+}
+function slugForQuestion(question) {
+  const slug = question.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").split("-").filter(Boolean).slice(0, 5).join("-");
+  return (slug || "room").slice(0, 48);
+}
+function isRoomState(v) {
+  if (typeof v !== "object" || v === null)
+    return false;
+  const r = v;
+  return typeof r.projectId === "string" && typeof r.room === "string" && typeof r.question === "string" && Array.isArray(r.participants) && (r.grounders === undefined || Array.isArray(r.grounders)) && Array.isArray(r.messages) && typeof r.round === "number" && typeof r.status === "string" && typeof r.seen === "object" && r.seen !== null;
+}
+async function readRoom(projectId, room) {
+  try {
+    const raw = await readFile11(paths.roomState(projectId, room), "utf8");
+    const parsed = JSON.parse(raw);
+    return isRoomState(parsed) ? { ...parsed, grounders: parsed.grounders ?? [] } : null;
+  } catch (err) {
+    if (isErrnoException(err) && err.code === "ENOENT")
+      return null;
+    throw err;
+  }
+}
+async function writeRoom(state) {
+  await mkdir8(paths.roomDir(state.projectId, state.room), { recursive: true });
+  await atomicWriteJSON(paths.roomState(state.projectId, state.room), state);
+}
+async function createRoom(input) {
+  assertValidRoomName(input.room);
+  const now = new Date().toISOString();
+  const state = {
+    ...input,
+    grounders: input.grounders ?? [],
+    createdAt: now,
+    updatedAt: now,
+    round: 0,
+    status: "open",
+    messages: [],
+    seen: Object.fromEntries(input.participants.map((p) => [p, 0]))
+  };
+  await writeRoom(state);
+  await appendFile2(paths.roomTranscript(state.projectId, state.room), `# Room: ${state.room}
+
+Convened by ${state.convenedBy} at ${now}.
+` + `Participants: ${describeParticipants(state)}.
+
+**Question:** ${state.question}
+
+---
+
+`, "utf8");
+  return state;
+}
+async function postMessage(state, from, text, pass = false) {
+  const seq = (state.messages.at(-1)?.seq ?? 0) + 1;
+  const at = new Date().toISOString();
+  const msg = { seq, round: state.round, from, text, at, ...pass ? { pass } : {} };
+  state.messages.push(msg);
+  state.updatedAt = at;
+  await writeRoom(state);
+  await appendFile2(paths.roomTranscript(state.projectId, state.room), `## ${at} · round ${state.round} · ${from}
+
+${text}
+
+---
+
+`, "utf8");
+  return msg;
+}
+function unseenBy(state, participant) {
+  const mark = state.seen[participant] ?? 0;
+  return state.messages.filter((m) => m.seq > mark && m.from !== participant && !m.pass);
+}
+function renderMessages(messages) {
+  return messages.map((m) => `**${m.from}:** ${m.text.trim()}`).join(`
+
+`);
+}
+function isGrounder(state, alias) {
+  return state.grounders.includes(alias);
+}
+function describeParticipants(state) {
+  return state.participants.map((p) => isGrounder(state, p) ? `${p} (grounding)` : p).join(", ");
+}
+function renderRoom(state) {
+  const head = `[room ${state.room} · ${state.status} · round ${state.round}]
+` + `Participants: ${describeParticipants(state)}
+` + `Question: ${state.question}
+`;
+  const byRound = new Map;
+  for (const m of state.messages) {
+    const list = byRound.get(m.round) ?? [];
+    list.push(m);
+    byRound.set(m.round, list);
+  }
+  const body = [...byRound.entries()].map(([round, msgs]) => `### Round ${round}
+
+${renderMessages(msgs)}`).join(`
+
+`);
+  return `${head}
+${body}`.trim();
+}
+async function listRooms(projectId) {
+  let names;
+  try {
+    names = await readdir6(paths.roomsProjectDir(projectId));
+  } catch (err) {
+    if (isErrnoException(err) && err.code === "ENOENT")
+      return [];
+    throw err;
+  }
+  const rooms = await Promise.all(names.map((n) => readRoom(projectId, n)));
+  return rooms.filter((r) => r !== null).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+async function readRoomTranscript(projectId, room) {
+  try {
+    return await readFile11(paths.roomTranscript(projectId, room), "utf8");
+  } catch (err) {
+    if (isErrnoException(err) && err.code === "ENOENT")
+      return "";
+    throw err;
+  }
+}
+
+// src/routing/gather.ts
+var PASS = /^\s*PASS\b/i;
+function isPass(answer) {
+  return PASS.test(answer);
+}
+function speakingOrder(state) {
+  const mentioned = new Set;
+  for (const p of state.participants) {
+    for (const m of unseenBy(state, p)) {
+      for (const q of state.participants) {
+        if (q !== m.from && new RegExp(`@${escapeRegExp(q)}\\b`).test(m.text))
+          mentioned.add(q);
+      }
+    }
+  }
+  const rank = (p) => (isGrounder(state, p) ? 0 : 2) + (mentioned.has(p) ? 0 : 1);
+  return [...state.participants].sort((a, b) => rank(a) - rank(b));
+}
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+function others(state, me) {
+  return state.participants.filter((p) => p !== me).map((p) => isGrounder(state, p) ? `${p} (grounding)` : p).join(", ");
+}
+function projectAccess(state) {
+  if (!state.projectPath)
+    return "";
+  return `The convening project lives at ${state.projectPath}. You may read its files to check facts before you assert them; cite file paths when you do. Do not modify anything there. `;
+}
+var GROUNDER_ROLE = "Your role is grounding, not advising: you are the project the others are talking about, and you have its code, docs and data in front of you. " + "Do not take a position on the decision itself.";
+function blindPrompt(state, me, totalRounds) {
+  const head = `[parley room "${state.room}" · round 1 of ${totalRounds} · blind round]
+` + `You are "${me}", one of ${state.participants.length} participants in a group discussion convened by ${state.convenedBy}. ` + `The others: ${others(state, me)}. This first round is blind: everyone answers independently and sees the others' answers next round.
+
+` + `Question:
+${state.question}
+
+`;
+  if (isGrounder(state, me)) {
+    return head + `${GROUNDER_ROLE} Check every factual claim the question makes about your project against the actual code and data. ` + `Correct what is wrong, cite the file (and line where useful) for what you confirm, and name the facts the question depends on but doesn't state. ` + `Keep it under 300 words.`;
+  }
+  return head + projectAccess(state) + `Answer in your own voice, from your own expertise. Take a clear position and give your reasons. Be concrete. Keep it under 300 words. Do not address the others yet.`;
+}
+function roundPrompt(state, me, delta, totalRounds) {
+  const head = `[parley room "${state.room}" · round ${state.round} of ${totalRounds}]
+` + `You are "${me}". Participants: ${describeParticipants(state)}. Question under discussion:
+${state.question}
+
+` + `Since your last turn:
+
+${delta}
+
+`;
+  if (isGrounder(state, me)) {
+    return head + `${GROUNDER_ROLE} Verify the factual claims the others made about your project: confirm or correct each one with a file reference, and answer any question addressed to you with @${me}. ` + `Where someone proposes a check or measurement you can run now, run it and report the result. Keep it under 250 words. If nothing needs verifying, reply with exactly: PASS`;
+  }
+  return head + projectAccess(state) + `Reply to the discussion. Agree or disagree explicitly, sharpen or challenge specific points, and address someone with @alias when you're speaking to them. ` + `Don't restate what you or others already said. Keep it under 250 words. If you have nothing to add, reply with exactly: PASS`;
+}
+async function runRounds(input) {
+  const { state, ask } = input;
+  if (state.status === "closed") {
+    throw new Error(`parley: room "${state.room}" is closed.`);
+  }
+  const totalRounds = state.round + input.rounds;
+  let roundsRun = 0;
+  while (state.round < totalRounds) {
+    state.round += 1;
+    state.status = "open";
+    await writeRoom(state);
+    roundsRun += 1;
+    if (state.round === 1) {
+      const answers = await Promise.all(state.participants.map((p) => safeAsk(ask, p, blindPrompt(state, p, totalRounds))));
+      for (let i = 0;i < state.participants.length; i++) {
+        const a = answers[i];
+        await postMessage(state, state.participants[i], a.text, a.failed);
+      }
+      continue;
+    }
+    let allPassed = true;
+    for (const p of speakingOrder(state)) {
+      const delta = unseenBy(state, p);
+      if (delta.length === 0)
+        continue;
+      const shownUpTo = state.messages.at(-1)?.seq ?? 0;
+      const a = await safeAsk(ask, p, roundPrompt(state, p, renderMessages(delta), totalRounds));
+      state.seen[p] = shownUpTo;
+      const passed = a.failed || isPass(a.text);
+      if (!passed)
+        allPassed = false;
+      await postMessage(state, p, passed && !a.failed ? "PASS" : a.text, passed);
+    }
+    if (allPassed) {
+      state.status = "converged";
+      await writeRoom(state);
+      break;
+    }
+  }
+  return { state, roundsRun };
+}
+async function safeAsk(ask, peer, prompt) {
+  try {
+    return { text: await ask(peer, prompt), failed: false };
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    return { text: `[no answer: ${detail}]`, failed: true };
+  }
+}
+
+// src/tools/parleyGather.ts
+init_sessions();
+init_locks();
+init_paths();
+var DEFAULT_ROUNDS = 3;
+var parleyGather = {
+  name: "parley_gather",
+  description: "Convene two or more peers in a shared room and run a structured discussion. Round 1 is blind: every peer answers the question independently, in parallel. Later rounds are sequential: each peer sees what was said since its last turn, must agree or disagree explicitly, and may address others with @alias; a peer with nothing to add replies PASS. The room converges early when everyone passes. Each peer answers from its own continuous parley session (memory and transcript intact), so personas stay in character across rooms. By default every advisor is told the convening project's path and may read it to check facts before asserting them (`projectAccess: false` withholds it). Peers listed in `grounders` take a different role: they don't advise, they verify. Give the project under discussion as a grounder whenever the question makes claims about a codebase, so the advisors argue over checked facts instead of the chair's framing. Returns the full room transcript for the caller to synthesize; the room stays open for parley_room say/continue. Rooms are stored under ~/.claude/parley/rooms/<projectId>/<room>/.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      peers: {
+        type: "array",
+        items: { type: "string" },
+        description: "Two or more peer aliases (see parley_peers). Personas and projects mix freely."
+      },
+      grounders: {
+        type: "array",
+        items: { type: "string" },
+        description: "Optional subset of `peers` that ground instead of advise: verify factual claims against their own code and data, correct wrong ones with file references, run checks others propose. Typically the project the room is about. Grounders speak first each round."
+      },
+      question: {
+        type: "string",
+        description: "The question or decision to discuss. Self-contained: peers see only this text plus the room transcript."
+      },
+      room: {
+        type: "string",
+        description: "Optional room name (lowercase, digits, hyphens). Defaults to a slug of the question."
+      },
+      rounds: {
+        type: "number",
+        description: "Total rounds including the blind first round. Default 3."
+      },
+      projectAccess: {
+        type: "boolean",
+        description: "Whether advisors are given this project's path and told they may read it. Default true."
+      },
+      timeoutMs: {
+        type: "number",
+        description: "Optional. Max ms to wait for each individual peer turn. Default 1800000 (30 min)."
+      }
+    },
+    required: ["peers", "question"],
+    additionalProperties: false
+  },
+  parseArgs(raw) {
+    const peers = raw.peers;
+    if (!Array.isArray(peers) || peers.length < 2 || !peers.every((p) => typeof p === "string" && p.length > 0)) {
+      throw new InvalidToolArgsError("parley_gather", "`peers` must be an array of at least two peer aliases");
+    }
+    const grounders = raw.grounders ?? [];
+    if (!Array.isArray(grounders) || !grounders.every((p) => typeof p === "string" && p.length > 0)) {
+      throw new InvalidToolArgsError("parley_gather", "`grounders` must be an array of peer aliases");
+    }
+    const rounds = optionalNumber(raw, "rounds") ?? DEFAULT_ROUNDS;
+    if (rounds < 1)
+      throw new InvalidToolArgsError("parley_gather", "`rounds` must be at least 1");
+    return {
+      peers,
+      grounders,
+      question: requireString("parley_gather", raw, "question"),
+      room: optionalString(raw, "room"),
+      rounds: Math.floor(rounds),
+      projectAccess: optionalBool(raw, "projectAccess") ?? true,
+      timeoutMs: optionalNumber(raw, "timeoutMs")
+    };
+  },
+  async handler(args, ctx) {
+    const sid = ctx.getCurrentSessionId();
+    if (!sid) {
+      throw new Error("parley: this session is not registered. Restart Claude Code so the SessionStart hook can fire.");
+    }
+    const manifest = await readManifest(sid);
+    const fromProject = manifest?.alias ?? ctx.getCurrentProjectName();
+    const fromProjectId = await ctx.getProjectId();
+    const participants = [];
+    for (const ref of args.peers) {
+      if (!await peerExists(ref)) {
+        throw new Error(`parley: peer "${ref}" not found. Add it with parley_add or check parley_peers.`);
+      }
+      const alias = await canonicalAlias(ref);
+      if (!participants.includes(alias))
+        participants.push(alias);
+    }
+    if (participants.length < 2) {
+      throw new Error("parley: a room needs at least two distinct peers.");
+    }
+    const grounders = [];
+    for (const ref of args.grounders) {
+      const alias = await canonicalAlias(ref);
+      if (!participants.includes(alias)) {
+        throw new Error(`parley: grounder "${ref}" is not one of the room's peers.`);
+      }
+      if (!grounders.includes(alias))
+        grounders.push(alias);
+    }
+    if (grounders.length === participants.length) {
+      throw new Error("parley: a room needs at least one peer that advises; not every peer can be a grounder.");
+    }
+    let room = args.room ?? slugForQuestion(args.question);
+    if (!args.room) {
+      let n = 2;
+      const base = room;
+      while (await readRoom(fromProjectId, room))
+        room = `${base}-${n++}`;
+    } else if (await readRoom(fromProjectId, room)) {
+      throw new Error(`parley: room "${room}" already exists. Use parley_room continue, or pick another name.`);
+    }
+    const state = await createRoom({
+      projectId: fromProjectId,
+      room,
+      question: args.question,
+      participants,
+      grounders,
+      convenedBy: fromProject,
+      projectPath: args.projectAccess ? ctx.getCurrentProjectPath() : undefined
+    });
+    const ask = async (peer, question) => {
+      const result2 = await routeAsk({
+        peerRef: peer,
+        question,
+        fromSessionId: sid,
+        fromProject,
+        fromProjectId,
+        timeoutMs: args.timeoutMs
+      });
+      return result2.answer;
+    };
+    const result = await withLock(paths.roomLockFor(fromProjectId, room), () => runRounds({ state, rounds: args.rounds, ask }));
+    const tail = result.state.status === "converged" ? `
+
+[parley: room converged, everyone passed. Synthesize the discussion for the user. Reopen with parley_room continue if needed.]` : `
+
+[parley: ${result.roundsRun} round(s) run. Synthesize the discussion for the user. Add your own point with parley_room say, then parley_room continue for another round.]`;
+    return renderRoom(result.state) + tail;
+  }
+};
+
 // src/tools/parleyListen.ts
 init_sessions();
 var parleyListen = {
@@ -16503,6 +16896,117 @@ var parleyReset = {
   }
 };
 
+// src/tools/parleyRoom.ts
+init_sessions();
+init_locks();
+init_paths();
+var ACTIONS = ["list", "log", "say", "continue", "close"];
+var parleyRoom = {
+  name: "parley_room",
+  description: "Manage discussion rooms created by parley_gather. Actions: `list` rooms for this project; `log` the full transcript of a room; `say` to post a message into the room as chair (participants see it on their next turn); `continue` to run more rounds (default 1); `close` to end the room. Rooms are per calling project.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      action: { type: "string", enum: ACTIONS, description: "One of list, log, say, continue, close." },
+      room: { type: "string", description: "Room name. Required for every action except list." },
+      message: { type: "string", description: "For say: the message to post as chair." },
+      rounds: { type: "number", description: "For continue: how many more rounds to run. Default 1." },
+      timeoutMs: { type: "number", description: "For continue: max ms per peer turn. Default 1800000." }
+    },
+    required: ["action"],
+    additionalProperties: false
+  },
+  parseArgs(raw) {
+    const action = requireString("parley_room", raw, "action");
+    if (!ACTIONS.includes(action)) {
+      throw new InvalidToolArgsError("parley_room", `\`action\` must be one of ${ACTIONS.join(", ")}`);
+    }
+    const room = optionalString(raw, "room");
+    if (action !== "list" && !room) {
+      throw new InvalidToolArgsError("parley_room", `\`room\` is required for ${action}`);
+    }
+    const rounds = optionalNumber(raw, "rounds") ?? 1;
+    if (rounds < 1)
+      throw new InvalidToolArgsError("parley_room", "`rounds` must be at least 1");
+    return {
+      action,
+      room,
+      message: optionalString(raw, "message"),
+      rounds: Math.floor(rounds),
+      timeoutMs: optionalNumber(raw, "timeoutMs")
+    };
+  },
+  async handler(args, ctx) {
+    const fromProjectId = await ctx.getProjectId();
+    if (args.action === "list") {
+      const rooms = await listRooms(fromProjectId);
+      if (rooms.length === 0)
+        return "No rooms yet for this project. Start one with parley_gather.";
+      return rooms.map((r) => `${r.room}  ${r.status}  round ${r.round}  [${r.participants.join(", ")}]  ${r.updatedAt}
+  ${r.question}`).join(`
+`);
+    }
+    const room = args.room;
+    const state = await readRoom(fromProjectId, room);
+    if (!state)
+      throw new Error(`parley: room "${room}" not found. Run parley_room list.`);
+    switch (args.action) {
+      case "log": {
+        const transcript = await readRoomTranscript(fromProjectId, room);
+        return transcript || renderRoom(state);
+      }
+      case "say": {
+        if (!args.message)
+          throw new InvalidToolArgsError("parley_room", "`message` is required for say");
+        if (state.status === "closed")
+          throw new Error(`parley: room "${room}" is closed.`);
+        await withLock(paths.roomLockFor(fromProjectId, room), async () => {
+          state.status = "open";
+          await postMessage(state, `${state.convenedBy} (chair)`, args.message);
+        });
+        return `Posted to room "${room}". Participants see it on their next turn: parley_room continue.`;
+      }
+      case "continue": {
+        const sid = ctx.getCurrentSessionId();
+        if (!sid) {
+          throw new Error("parley: this session is not registered. Restart Claude Code so the SessionStart hook can fire.");
+        }
+        const manifest = await readManifest(sid);
+        const fromProject = manifest?.alias ?? ctx.getCurrentProjectName();
+        const ask = async (peer, question) => {
+          const result2 = await routeAsk({
+            peerRef: peer,
+            question,
+            fromSessionId: sid,
+            fromProject,
+            fromProjectId,
+            timeoutMs: args.timeoutMs
+          });
+          return result2.answer;
+        };
+        const before = state.messages.length;
+        const result = await withLock(paths.roomLockFor(fromProjectId, room), () => runRounds({ state, rounds: args.rounds, ask }));
+        const fresh = { ...result.state, messages: result.state.messages.slice(before) };
+        const tail = result.state.status === "converged" ? `
+
+[parley: room converged, everyone passed.]` : `
+
+[parley: ${result.roundsRun} round(s) run.]`;
+        return renderRoom(fresh) + tail;
+      }
+      case "close": {
+        state.status = "closed";
+        state.updatedAt = new Date().toISOString();
+        await writeRoom(state);
+        return `Room "${room}" closed.`;
+      }
+      default:
+        args.action;
+        throw new Error("unreachable");
+    }
+  }
+};
+
 // src/tools/parleyRespond.ts
 init_sessions();
 var parleyRespond = {
@@ -16550,6 +17054,7 @@ var tools = [
   parleyAsk,
   parleyClean,
   parleyDiscover,
+  parleyGather,
   parleyListen,
   parleyLog,
   parleyPeers,
@@ -16557,7 +17062,8 @@ var tools = [
   parleyRemember,
   parleyRemove,
   parleyReset,
-  parleyRespond
+  parleyRespond,
+  parleyRoom
 ];
 
 // src/server.ts

@@ -36,7 +36,7 @@ export function resolveSession(input: ResolveInput = {}): ResolveResult | null {
 
 export function parentCwd(ppid: number): string | null {
   if (!ppid || ppid <= 1) return null;
-  const out = bestEffortExec('lsof', ['-p', String(ppid), '-d', 'cwd', '-F', 'n']);
+  const out = bestEffortExec('lsof', ['-a', '-p', String(ppid), '-d', 'cwd', '-F', 'n']);
   if (!out) return null;
   // lsof -F n emits multiple lines; the cwd line starts with 'n'. Take the last.
   const lines = out.split('\n').filter((l) => l.startsWith('n'));

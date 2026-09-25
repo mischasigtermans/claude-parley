@@ -14,6 +14,8 @@ Parley exposes two surfaces: slash commands for explicit operations, and natural
 | `/parley add <alias> <path> [description]` | Register a peer in `peers.json`. |
 | `/parley remove <alias>` | Unregister a peer. |
 | `/parley log <alias> [tail]` | Read recent Q&A transcript with a peer. |
+| `/parley gather <peer> <peer>... <question>` | Convene peers in a room: blind first round, then sequential rounds until they converge or the round cap hits. |
+| `/parley room list\|log\|say\|continue\|close [room] [message]` | Manage rooms: list them, read a transcript, post as chair, run more rounds, close. |
 | `/parley remember <peer>` | Distil the transcript into durable memory, prepended to future asks. |
 | `/parley reset <alias>` | Clear cached headless session. Next ask spawns fresh. Memory is left intact. |
 | `/parley clean [--dry-run]` | Remove dead sessions and dangling PID sentinels. |
@@ -22,7 +24,7 @@ Parley exposes two surfaces: slash commands for explicit operations, and natural
 
 The bundled MCP server exposes the underlying tools:
 
-`parley_peers`, `parley_ask`, `parley_listen`, `parley_receive_next`, `parley_respond`, `parley_log`, `parley_remember`, `parley_reset`, `parley_add`, `parley_remove`, `parley_clean`, `parley_discover`.
+`parley_peers`, `parley_ask`, `parley_gather`, `parley_room`, `parley_listen`, `parley_receive_next`, `parley_respond`, `parley_log`, `parley_remember`, `parley_reset`, `parley_add`, `parley_remove`, `parley_clean`, `parley_discover`.
 
 These are reachable from any other MCP-capable client (Claude Desktop, Cursor) by pointing it at the parley MCP server directly. Claude Code is the most ergonomic surface but not the only one.
 

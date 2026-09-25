@@ -285,6 +285,11 @@ export async function isMemoryEnabled(alias: string): Promise<boolean> {
   return memoryEnabledFor(config, alias, await declaredMemoryFlag(alias));
 }
 
+/** Whether `ref` resolves to a registered peer, an extension peer, or a live session. */
+export async function peerExists(ref: string): Promise<boolean> {
+  return (await resolvePeer(ref, await readPeers())) !== null;
+}
+
 async function resolvePeer(
   ref: string,
   peersFile: PeersFile,

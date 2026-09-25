@@ -42,6 +42,7 @@ The `parley` skill picks up the names and calls `parley_add` for each. From then
 /parley peers
 'ask docs what's our auth strategy'
 'check with api how it handles rate limits'
+'let docs and api debate whether rate limits belong in the gateway'
 ```
 
 You can also be explicit:
@@ -55,6 +56,7 @@ You can also be explicit:
 ## Features
 
 - **One continuous conversation per (project, `<peer>`).** Live and headless transports share a session pointer; the next ask resumes the same claude session whichever path runs.
+- **Group discussions.** `/parley gather steve taylor onoma 'question'` puts several peers in a room: a blind first round, then sequential rounds where each peer sees the others, disagrees explicitly, or passes. Advisors may read the convening project; pass the project itself as a grounder and it verifies the others' claims against its code instead of opining. Steer with `/parley room say`, extend with `/parley room continue`.
 - **Durable memory per (project, `<peer>`).** `/parley remember <peer>` distils a conversation into bullets that prepend to every future ask, so context survives even a fresh session. Opt out per peer in `config.json`.
 - **Headless by default.** `fallback = "headless"` spawns `claude -p` in the peer's directory (draws from your Agent SDK credit pool). No window pops open. To answer at zero SDK credit instead, open the peer and run `/parley listen`; an already-listening window handles the ask live. Set `fallback = "ask"` in `~/.claude/parley/config.json` to be prompted each time no listener exists.
 - **Per-asker-project state.** Each calling project gets its own cached session, transcript, and turn count per `<peer>`.

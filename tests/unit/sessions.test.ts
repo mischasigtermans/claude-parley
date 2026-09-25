@@ -1,4 +1,4 @@
-import { describe, it, beforeEach, afterEach, expect } from 'vitest';
+import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest';
 import { writeFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import {
@@ -105,5 +105,15 @@ describe('sessions registry', () => {
     await mkdir(dirname(manifestPath), { recursive: true });
     await writeFile(manifestPath, '{ not json');
     expect(await readManifest('broken')).toBeNull();
+  });
+
+  it('concurrent listLiveSessions calls share one auto-sweep', async () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      await Promise.all(Array.from({ length: 5 }, () => listLiveSessions()));
+      expect(stderr.mock.calls.flat().join('')).not.toMatch(/auto-sweep failed/);
+    } finally {
+      stderr.mockRestore();
+    }
   });
 });

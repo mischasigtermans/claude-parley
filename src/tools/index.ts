@@ -3,6 +3,7 @@ import { parleyAdd } from './parleyAdd.js';
 import { parleyAsk } from './parleyAsk.js';
 import { parleyClean } from './parleyClean.js';
 import { parleyDiscover } from './parleyDiscover.js';
+import { parleyGather } from './parleyGather.js';
 import { parleyListen } from './parleyListen.js';
 import { parleyLog } from './parleyLog.js';
 import { parleyPeers } from './parleyPeers.js';
@@ -10,6 +11,7 @@ import { parleyReceiveNext } from './parleyReceiveNext.js';
 import { parleyRemember } from './parleyRemember.js';
 import { parleyRemove } from './parleyRemove.js';
 import { parleyReset } from './parleyReset.js';
+import { parleyRoom } from './parleyRoom.js';
 import { parleyRespond } from './parleyRespond.js';
 
 // Array stores tools with erased args type. Each tool's parseArgs+handler
@@ -22,6 +24,7 @@ export const tools: AnyToolDef[] = [
   parleyAsk,
   parleyClean,
   parleyDiscover,
+  parleyGather,
   parleyListen,
   parleyLog,
   parleyPeers,
@@ -30,4 +33,5 @@ export const tools: AnyToolDef[] = [
   parleyRemove,
   parleyReset,
   parleyRespond,
+  parleyRoom,
 ];

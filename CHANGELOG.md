@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.5.0] - 2026-09-25
+
+Group discussions. Several peers, personas or projects, meet in one room and talk to each other instead of answering the caller one by one.
+
+**Added**
+
+- **`parley_gather` tool.** Convenes two or more peers around a question. Round 1 is blind: every peer answers independently, in parallel, so nobody anchors on the first voice. Later rounds run sequentially; each peer sees only what was said since its last turn, must agree or disagree explicitly, and can address others with `@alias` (mentioned peers speak first next round). A peer replies `PASS` when it has nothing to add; the room converges when everyone passes. Default 3 rounds. Every turn goes through `routeAsk`, so peers keep their per-project session, transcript and memory.
+- **Grounders.** `parley_gather` takes `grounders`, a subset of `peers` that verify instead of advise: a grounder checks the others' factual claims against its own code and data, corrects wrong ones with file references, runs checks the advisors propose, and speaks first each round so advisors argue over checked facts rather than the chair's framing. Typically the project the room is about.
+- **Project access for advisors.** Advisors are told the convening project's path and that they may read it to check facts before asserting them (`projectAccess`, default true).
+- **`parley_room` tool.** `list`, `log`, `say` (post as chair; peers see it on their next turn), `continue` (more rounds), `close`.
+- **Room store.** `~/.claude/parley/rooms/<projectId>/<room>/` with `state.json` (source of truth) and `transcript.md` (append-only, readable). `src/registry/rooms.ts` and `src/routing/gather.ts`.
+- **Skill.** `/parley gather ...`, `/parley room ...`, and the awareness trigger for "let X and Y discuss Z". The skill synthesizes the transcript (agreement, disagreement, strongest points) instead of dumping it.
+
+**Fixed**
+
+- **Project scoping resolved to a random process's cwd.** `parentCwd()` ran `lsof -p <pid> -d cwd`, and lsof ORs its selectors: that lists the cwd of every process on the machine, and parley took the last line. Whichever process lsof happened to list last decided the `project_id`, so headless caches, transcripts, memory and rooms could land under another project's key. `-a` ANDs the selectors and returns only the parent's cwd.
+- **Concurrent asks raced the hourly auto-sweep.** `maybeAutoSweep` awaited `state.json` before setting its in-flight flag, so parallel `routeAsk` calls (the blind round of `parley_gather`) each started a sweep, and the second one's `state.json` rename failed with ENOENT. The flag is set before the first await, so concurrent callers share one sweep.
+
 ## [0.4.2] - 2026-07-18
 
 Hardening for the 0.4.1 binary resolver, after a production `spawn /usr/local/bin/claude ENOENT` that the error message misattributed.
