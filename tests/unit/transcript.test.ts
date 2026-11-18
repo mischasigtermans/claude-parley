@@ -23,6 +23,15 @@ describe('transcript', () => {
     expect(tail).toContain('a1');
   });
 
+  it('a headless entry names its thread after the tier, a live one names none', async () => {
+    await appendTurn(PROJ, 'peer-a', 'cowork', 'q1', 'a1', 'headless-fresh', 'k3x9qa');
+    await appendTurn(PROJ, 'peer-a', 'cowork', 'q2', 'a2', 'live');
+
+    const [headless, live] = (await readTranscript(PROJ, 'peer-a', 0)).split('\n').filter((l) => l.startsWith('## '));
+    expect(headless).toMatch(/^## \S+ · from cowork \(headless-fresh\) · thread k3x9qa$/);
+    expect(live).toMatch(/^## \S+ · from cowork \(live\)$/);
+  });
+
   it('multiple turns are appended in order and tail respects N', async () => {
     await appendTurn(PROJ, 'peer-a', 'cowork', 'q1', 'a1', 'headless-fresh');
     await appendTurn(PROJ, 'peer-a', 'cowork', 'q2', 'a2', 'headless-resumed');

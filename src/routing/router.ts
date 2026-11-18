@@ -11,10 +11,19 @@ import {
   readManifest,
   SessionManifest,
 } from '../registry/sessions.js';
-import { readHeadless, writeHeadless, HeadlessRecord } from '../registry/headless.js';
+import {
+  adoptConversation,
+  withPeerLockOrSkip,
+  readHeadless,
+  writeHeadless,
+  readThread,
+  writeThread,
+  newThreadId,
+  HeadlessRecord,
+} from '../registry/headless.js';
 import { withLock } from '../registry/locks.js';
 import { paths, expandHome, type ProjectId } from '../registry/paths.js';
-import { getClaudeDriver } from '../drivers/claude.js';
+import { getClaudeDriver, type SpawnResult } from '../drivers/claude.js';
 import { readParleyConfig, memoryEnabledFor, type Fallback } from '../config.js';
 import { readMemory } from '../registry/memory.js';
 import { sendMessage, waitForMessage, findInboxStatus } from './queue.js';
@@ -39,6 +48,8 @@ export interface AskInput {
   fromProject: string;
   fromProjectId: ProjectId;
   timeoutMs?: number;
+  /** Continue this earlier conversation. Without it the ask starts a fresh one. */
+  thread?: string;
 }
 
 export interface AskResult {
@@ -47,6 +58,16 @@ export interface AskResult {
   answer: string;
   /** Turns accumulated since the last parley_remember (turnCount - rememberedTurn). */
   pending: number;
+  /** Set for a headless answer: pass it back as `thread` to continue the conversation. */
+  thread?: string;
+}
+
+export class UnknownThreadError extends Error {
+  constructor(thread: string, alias: string) {
+    super(
+      `parley: no thread "${thread}" with "${alias}" in this project. Leave thread out to start a fresh conversation.`,
+    );
+  }
 }
 
 const CONCISE_PREAMBLE = `[parley directive: answer this query from a peer Claude Code session]
@@ -70,33 +91,34 @@ export async function routeAsk(input: AskInput): Promise<AskResult> {
     );
   }
 
-  // Load the asker's cached session pointer for this peer up front. Used to:
-  //   1. Pick the matching live listener when multiple are present (B3).
-  //   2. Write the listener's claudeSessionId back into the cache after a live
-  //      answer succeeds, so the next ask (live or headless) can --resume the
-  //      same thread (B2).
+  // The per-peer record names the listener that answered last, which picks the
+  // matching one when several are listening (B3).
   const pointer = await readHeadless(input.fromProjectId, peer.alias);
 
-  const live = await resolveListening(
-    peer.alias,
-    peer.config,
-    peer.sessionId,
-    input.fromSessionId,
-    pointer?.claudeSessionId,
-  );
+  // A thread is a headless conversation: an ask that names one continues it there.
+  const live: ListeningResolution = input.thread
+    ? { kind: 'none' }
+    : await resolveListening(peer.alias, peer.config, peer.sessionId, input.fromSessionId, pointer?.claudeSessionId);
   switch (live.kind) {
     case 'single': {
       const answer = await routeLive({ ...input, target: live.session, timeoutMs: effectiveTimeoutMs });
       await appendTurn(input.fromProjectId, peer.alias, input.fromProject, input.question, answer, 'live');
-      if (live.session.claudeSessionId) {
-        await updatePointerToLive({
-          pointer,
-          peer,
-          fromProjectId: input.fromProjectId,
-          claudeSessionId: live.session.claudeSessionId,
-        });
-      }
-      const pending = (pointer?.turnCount ?? 0) + 1 - (pointer?.rememberedTurn ?? 0);
+      // The listener's session replaces the one the record names, so adopt
+      // that conversation first or it can't be reached again.
+      const listener = live.session.claudeSessionId;
+      const counted = listener
+        ? await withPeerLockOrSkip(input.fromProjectId, peer.alias, async () => {
+            await adoptConversation(input.fromProjectId, peer.alias);
+            return updatePointerToLive({
+              pointer: await readHeadless(input.fromProjectId, peer.alias),
+              peer,
+              fromProjectId: input.fromProjectId,
+              claudeSessionId: listener,
+            });
+          })
+        : undefined;
+      const record = counted ?? (await readHeadless(input.fromProjectId, peer.alias));
+      const pending = record ? record.turnCount - (record.rememberedTurn ?? 0) : 0;
       return { alias: peer.alias, tier: 'live', answer, pending };
     }
     case 'multiple': {
@@ -124,10 +146,15 @@ export async function routeAsk(input: AskInput): Promise<AskResult> {
   const fallback: Fallback = config.fallback;
 
   if (fallback === 'ask') {
+    if (input.thread) {
+      throw new Error(
+        `parley: thread "${input.thread}" continues headless, which fallback="ask" doesn't allow. Set fallback="headless" in ~/.claude/parley/config.json or PARLEY_FALLBACK=headless.`,
+      );
+    }
     throw new Error(noListenerMessage(peer.alias));
   }
 
-  // fallback === 'headless' (default): spawn `claude -p` with --resume from pointer.
+  // fallback === 'headless' (default): spawn `claude -p`, with --resume for the thread the ask names.
   const cwd = expandHome(peer.config.path);
   const driver = getClaudeDriver();
 
@@ -143,70 +170,96 @@ export async function routeAsk(input: AskInput): Promise<AskResult> {
   // Per-peer `skipPermissions` wins; otherwise fall back to config.skipDefault.
   const skipPermissions = peer.config.skipPermissions ?? config.skipDefault;
 
-  return withLock(paths.headlessLockFor(input.fromProjectId, peer.alias), async () => {
-    // Use the pointer we already loaded above; re-read under the lock to
-    // pick up any writes that landed between the initial read and now.
-    const cached = await readHeadless(input.fromProjectId, peer.alias);
-    let tier: Tier;
-    let result;
+  const baseSpawn = {
+    cwd,
+    prompt: wrappedPrompt,
+    timeoutMs: effectiveTimeoutMs,
+    skipPermissions,
+    model,
+    mcpServers,
+  };
 
-    const baseSpawn = {
-      cwd,
-      prompt: wrappedPrompt,
-      timeoutMs: effectiveTimeoutMs,
-      skipPermissions,
-      model,
-      mcpServers,
-    };
-
-    if (cached) {
+  const spawn = async (resume: string | undefined): Promise<{ tier: Tier; result: SpawnResult }> => {
+    if (resume) {
       try {
-        result = await driver.spawn({ ...baseSpawn, sessionId: cached.claudeSessionId });
-        tier = 'headless-resumed';
+        return { tier: 'headless-resumed', result: await driver.spawn({ ...baseSpawn, sessionId: resume }) };
       } catch (err) {
         process.stderr.write(
           `parley: resume failed for "${peer.alias}", falling back to fresh: ${errorMessage(err)}\n`,
         );
-        result = await driver.spawn(baseSpawn);
-        tier = 'headless-fresh';
       }
-    } else {
-      result = await driver.spawn(baseSpawn);
-      tier = 'headless-fresh';
     }
+    return { tier: 'headless-fresh', result: await driver.spawn(baseSpawn) };
+  };
 
+  const thread = input.thread ?? newThreadId();
+  if (input.thread && !(await readThread(input.fromProjectId, peer.alias, thread))) {
+    throw new UnknownThreadError(thread, peer.alias);
+  }
+
+  const { tier, result } = await withLock(
+    paths.threadLockFor(input.fromProjectId, peer.alias, thread),
+    async () => {
+      const earlier = input.thread ? await readThread(input.fromProjectId, peer.alias, thread) : null;
+      const turn = await spawn(earlier?.claudeSessionId);
+      const now = new Date().toISOString();
+      await writeThread(input.fromProjectId, peer.alias, {
+        thread,
+        claudeSessionId: turn.result.sessionId,
+        createdAt: earlier?.createdAt ?? now,
+        lastUsedAt: now,
+        turnCount: (earlier?.turnCount ?? 0) + 1,
+      });
+      return turn;
+    },
+    // Held across a spawn, so a second ask on this thread waits as long as it would for its own answer.
+    { timeoutMs: effectiveTimeoutMs },
+  );
+
+  await appendTurn(input.fromProjectId, peer.alias, input.fromProject, input.question, result.output, tier, thread);
+
+  // The per-peer record counts turns and names the listener the live tier
+  // matches. A turn never puts its own session there, and keeps a live record
+  // live: a 0.5.0 server on the same state folder resumes whatever a headless
+  // record names, and that session is adopted as a thread. Adopting before
+  // this turn counts gives the thread the record's own turn count. The answer
+  // is already paid for, so a 0.5.0 spawn holding the lock skips the count
+  // rather than losing it.
+  const counted = await withPeerLockOrSkip(input.fromProjectId, peer.alias, async () => {
+    await adoptConversation(input.fromProjectId, peer.alias);
+    const earlier = await readHeadless(input.fromProjectId, peer.alias);
     const now = new Date().toISOString();
     const next: HeadlessRecord = {
       projectId: input.fromProjectId,
       alias: peer.alias,
-      claudeSessionId: result.sessionId,
+      claudeSessionId: earlier?.claudeSessionId ?? '',
       cwd,
-      createdAt: cached?.createdAt ?? now,
+      createdAt: earlier?.createdAt ?? now,
       lastUsedAt: now,
-      turnCount: (cached?.turnCount ?? 0) + 1,
-      origin: 'headless',
-      rememberedTurn: cached?.rememberedTurn,
+      turnCount: (earlier?.turnCount ?? 0) + 1,
+      origin: earlier?.origin ?? 'headless',
+      rememberedTurn: earlier?.rememberedTurn,
+      adopted: earlier?.adopted,
     };
     await writeHeadless(next);
-    await appendTurn(input.fromProjectId, peer.alias, input.fromProject, input.question, result.output, tier);
-    const pending = next.turnCount - (next.rememberedTurn ?? 0);
-    return { alias: peer.alias, tier, answer: result.output, pending };
+    return next;
   });
+  const record = counted ?? (await readHeadless(input.fromProjectId, peer.alias));
+  const pending = record ? record.turnCount - (record.rememberedTurn ?? 0) : 0;
+  return { alias: peer.alias, tier, answer: result.output, pending, thread };
 }
 
 /**
- * Update the asker's session pointer to reflect the most recent live response.
- * The next ask (live or headless) can --resume the same claude session,
- * keeping the conversation continuous across transports.
+ * Count a live answer in the asker's per-peer record and name the listener
+ * that gave it, so the next ask picks that listener when several are listening.
+ * Call under the per-peer lock.
  */
 async function updatePointerToLive(opts: {
   pointer: HeadlessRecord | null;
   peer: { alias: string; config: PeerConfig };
   fromProjectId: ProjectId;
   claudeSessionId: string;
-}): Promise<void> {
-  // Single-user assumption: not lock-guarded. Two overlapping live replies
-  // can race on turnCount/claudeSessionId. Acceptable for v0.3.0.
+}): Promise<HeadlessRecord> {
   const now = new Date().toISOString();
   const next: HeadlessRecord = {
     projectId: opts.fromProjectId,
@@ -218,8 +271,10 @@ async function updatePointerToLive(opts: {
     turnCount: (opts.pointer?.turnCount ?? 0) + 1,
     origin: 'live',
     rememberedTurn: opts.pointer?.rememberedTurn,
+    adopted: opts.pointer?.adopted,
   };
   await writeHeadless(next);
+  return next;
 }
 
 function noListenerMessage(alias: string): string {
@@ -241,9 +296,9 @@ function canonicalExtensionAlias(
 
 /**
  * Resolve a peer ref to the canonical alias used to key headless state
- * (cache, transcript, lock). Extension peers expose multiple aliases for one
- * path; all of them must map to a single key so the conversation stays
- * continuous regardless of which alias the caller typed. Falls back to the
+ * (record, threads, transcript, locks). Extension peers expose multiple aliases
+ * for one path; all of them must map to a single key so a thread continues
+ * regardless of which alias the caller typed. Falls back to the
  * typed alias when the ref doesn't match a registered peer.
  */
 export async function canonicalAlias(ref: string): Promise<string> {
@@ -308,7 +363,7 @@ async function resolvePeer(
   if (extPeer) {
     return {
       // Key by the canonical alias (first manifest entry sharing this path), so
-      // asking the same peer via any of its aliases resumes one session.
+      // asking the same peer via any of its aliases shares its threads.
       alias: canonicalExtensionAlias(extensions, extPeer),
       config: {
         path: extPeer.path,
@@ -369,7 +424,7 @@ async function resolveListening(
   if (sessions.length === 1) return { kind: 'single', session: sessions[0] };
 
   // Multiple listeners. Prefer the one whose claudeSessionId matches the
-  // asker's cached pointer (a thread continuation). Falls back to the
+  // asker's per-peer record (the listener that answered last). Falls back to the
   // disambiguation error if none match.
   if (preferredClaudeSessionId) {
     const matched = sessions.find((s) => s.claudeSessionId === preferredClaudeSessionId);

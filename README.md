@@ -5,7 +5,7 @@
 
 Talk to your other Claude Code projects from any session.
 
-Parley bundles an MCP server. By default it spawns a headless Claude in the peer's project directory, runs your request with that project's CLAUDE.md, skills, and context loaded, and persists the session so the agent has memory across turns. Per-peer MCP servers can be opted in via `peers.json`. If the peer is open and in `/parley listen` mode, that live window handles it instead.
+Parley bundles an MCP server. By default it spawns a headless Claude in the peer's project directory, runs your request with that project's CLAUDE.md, skills, and context loaded, and keeps the conversation as a thread you can continue. Per-peer MCP servers can be opted in via `peers.json`. If the peer is open and in `/parley listen` mode, that live window handles it instead.
 
 ## Installation
 
@@ -55,11 +55,11 @@ You can also be explicit:
 
 ## Features
 
-- **One continuous conversation per (project, `<peer>`).** Live and headless transports share a session pointer; the next ask resumes the same claude session whichever path runs.
+- **Every ask starts fresh.** A review never carries another session's, subagent's or worktree's context. The answer's first line names a thread, and an ask that passes that thread continues the conversation. `/parley peers` lists the threads worth continuing.
 - **Group discussions.** `/parley gather steve taylor onoma 'question'` puts several peers in a room: a blind first round, then sequential rounds where each peer sees the others, disagrees explicitly, or passes. Advisors may read the convening project; pass the project itself as a grounder and it verifies the others' claims against its code instead of opining. Steer with `/parley room say`, extend with `/parley room continue`.
-- **Durable memory per (project, `<peer>`).** `/parley remember <peer>` distils a conversation into bullets that prepend to every future ask, so context survives even a fresh session. Opt out per peer in `config.json`.
+- **Durable memory per (project, `<peer>`).** `/parley remember <peer>` distils a conversation into bullets that prepend to every future ask, so every fresh conversation starts with that context. Opt out per peer in `config.json`.
 - **Headless by default.** `fallback = "headless"` spawns `claude -p` in the peer's directory (draws from your Agent SDK credit pool). No window pops open. To answer at zero SDK credit instead, open the peer and run `/parley listen`; an already-listening window handles the ask live. Set `fallback = "ask"` in `~/.claude/parley/config.json` to be prompted each time no listener exists.
-- **Per-asker-project state.** Each calling project gets its own cached session, transcript, and turn count per `<peer>`.
+- **Per-asker-project state.** Each calling project gets its own threads, transcript, and turn count per `<peer>`.
 - **Auto-discovery** of recent Claude projects via `/parley discover`.
 - **Extensions** (e.g. personas plugin) can register peers by dropping a manifest at `~/.claude/parley/extensions/`. See [docs/extensions.md](docs/extensions.md).
 - **Natural-language and slash-command interfaces**, both backed by the same skill.
@@ -69,7 +69,7 @@ You can also be explicit:
 ## Documentation
 
 - [Commands](docs/commands.md): slash commands and MCP tools reference
-- [Routing](docs/routing.md): how Parley picks live, resumed, or fresh; session pointer / `--resume` continuity
+- [Routing](docs/routing.md): how Parley picks live, resumed, or fresh; threads and how to continue one
 - [Configuration](docs/configuration.md): `peers.json`, `config.json`, runtime state, permission handling, cleanup
 - [Extensions](docs/extensions.md): how other plugins register peers with Parley
 

@@ -52,6 +52,11 @@ export const paths = {
     join(parleyDir(), 'headless', projectId, `${alias}.json`),
   headlessLockFor: (projectId: ProjectId, alias: string) =>
     join(parleyDir(), 'locks', `${projectId}-${alias}.lock`),
+  threadsDirFor: (projectId: ProjectId, alias: string) => join(parleyDir(), 'headless', projectId, alias),
+  threadFor: (projectId: ProjectId, alias: string, thread: string) =>
+    join(parleyDir(), 'headless', projectId, alias, `${thread}.json`),
+  threadLockFor: (projectId: ProjectId, alias: string, thread: string) =>
+    join(parleyDir(), 'locks', `${projectId}-${alias}-${thread}.lock`),
   logsProjectDir: (projectId: ProjectId) => join(parleyDir(), 'logs', projectId),
   logFor: (projectId: ProjectId, alias: string) =>
     join(parleyDir(), 'logs', projectId, `${alias}.md`),

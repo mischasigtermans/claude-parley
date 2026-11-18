@@ -8,7 +8,7 @@ import {
   type Platform,
   SessionManifest,
 } from '../registry/sessions.js';
-import { readHeadless } from '../registry/headless.js';
+import { adoptConversation, listThreads, readHeadless, withPeerLockOrSkip } from '../registry/headless.js';
 import { readExtensions } from '../registry/extensions.js';
 import { expandHome, type ProjectId } from '../registry/paths.js';
 
@@ -25,7 +25,7 @@ interface Row {
 export const parleyPeers: ToolDef = {
   name: 'parley_peers',
   description:
-    "List all addressable peers on this machine. Call this FIRST whenever the user references another project by name (e.g. 'ask <peer> about X', 'check with <peer>'). Each peer gets a headless row (always reachable, alias-keyed) plus one row per /parley listen session at that path (addressable as alias:sid). Includes peers from ~/.claude/parley/peers.json AND from any extension manifests under ~/.claude/parley/extensions/. Use the result to pick the right peer ref before calling parley_ask. Returns a markdown table: Peer, Type, Source, Mode (headless/listening), History (turns of cached headless conversation from the calling project, or '-'), Location (filesystem path, or `<plugin>@<marketplace>` for plugin-managed peers), Notes.",
+    "List all addressable peers on this machine. Call this FIRST whenever the user references another project by name (e.g. 'ask <peer> about X', 'check with <peer>'). Each peer gets a headless row (always reachable, alias-keyed) plus one row per /parley listen session at that path (addressable as alias:sid). Includes peers from ~/.claude/parley/peers.json AND from any extension manifests under ~/.claude/parley/extensions/. Use the result to pick the right peer ref before calling parley_ask. Returns a markdown table: Peer, Type, Source, Mode (headless/listening), History (turns the calling project has had with the peer, or '-'), Location (filesystem path, or `<plugin>@<marketplace>` for plugin-managed peers), Notes. A headless row's notes name up to three of the calling project's threads with the peer that have more than one turn, most recent first; pass one as `thread` to parley_ask to continue that conversation.",
   inputSchema: {
     type: 'object',
     properties: {},
@@ -142,6 +142,7 @@ async function pushRowsForPath(opts: {
   const nonListening = opts.sessions.filter((s) => s.status !== 'listening' && s.sessionId !== opts.mySid);
 
   if (!opts.skipHeadless) {
+    await withPeerLockOrSkip(opts.fromProjectId, opts.alias, () => adoptConversation(opts.fromProjectId, opts.alias));
     const headless = await readHeadless(opts.fromProjectId, opts.alias);
     const history = headless
       ? `${headless.turnCount} ${headless.turnCount === 1 ? 'turn' : 'turns'}`
@@ -150,6 +151,12 @@ async function pushRowsForPath(opts: {
     const headlessNotes: string[] = [];
     const pending = headless ? headless.turnCount - (headless.rememberedTurn ?? 0) : 0;
     if (pending > 0) headlessNotes.push(`${pending} to distill`);
+    const threads = (await listThreads(opts.fromProjectId, opts.alias))
+      .filter((t) => t.turnCount > 1)
+      .slice(0, 3);
+    if (threads.length > 0) {
+      headlessNotes.push(`threads: ${threads.map((t) => `${t.thread} (${t.turnCount} turns)`).join(', ')}`);
+    }
     if (opts.discovered) headlessNotes.push('discovered');
     if (nonListening.length > 0) {
       headlessNotes.push(`${nonListening.length} active window${nonListening.length === 1 ? '' : 's'}`);

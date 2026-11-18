@@ -9,11 +9,12 @@ export async function appendTurn(
   question: string,
   answer: string,
   via: 'live' | 'headless-resumed' | 'headless-fresh',
+  thread?: string,
 ): Promise<void> {
   await mkdir(paths.logsProjectDir(projectId), { recursive: true });
   const ts = new Date().toISOString();
   const block =
-    `## ${ts} · from ${fromProject} (${via})\n\n` +
+    `## ${ts} · from ${fromProject} (${via})${thread ? ` · thread ${thread}` : ''}\n\n` +
     `**Q:** ${question}\n\n` +
     `**A:**\n\n${answer}\n\n---\n\n`;
   await appendFile(paths.logFor(projectId, alias), block, 'utf8');

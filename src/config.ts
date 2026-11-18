@@ -5,8 +5,8 @@ import { homedir } from 'node:os';
 /**
  * What `parley_ask` does when no live listener exists for the peer.
  *
- *  - `headless` (default): spawn `claude -p` in the peer's directory with
- *    `--resume <cached sid>` if a pointer exists. For Claude subscription
+ *  - `headless` (default): spawn `claude -p` in the peer's directory, with
+ *    `--resume` for the thread the ask names. For Claude subscription
  *    users, this draws from the Agent SDK credit pool (separate from
  *    interactive limits).
  *

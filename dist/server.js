@@ -6676,6 +6676,9 @@ var init_paths = __esm(() => {
     headlessProjectDir: (projectId) => join(parleyDir(), "headless", projectId),
     headlessFor: (projectId, alias) => join(parleyDir(), "headless", projectId, `${alias}.json`),
     headlessLockFor: (projectId, alias) => join(parleyDir(), "locks", `${projectId}-${alias}.lock`),
+    threadsDirFor: (projectId, alias) => join(parleyDir(), "headless", projectId, alias),
+    threadFor: (projectId, alias, thread) => join(parleyDir(), "headless", projectId, alias, `${thread}.json`),
+    threadLockFor: (projectId, alias, thread) => join(parleyDir(), "locks", `${projectId}-${alias}-${thread}.lock`),
     logsProjectDir: (projectId) => join(parleyDir(), "logs", projectId),
     logFor: (projectId, alias) => join(parleyDir(), "logs", projectId, `${alias}.md`),
     memoryProjectDir: (projectId) => join(parleyDir(), "memory", projectId),
@@ -6947,12 +6950,122 @@ var init_state = __esm(() => {
   init_locks();
 });
 
+// src/registry/headless.ts
+import { createHash as createHash2, randomBytes } from "node:crypto";
+import { readdir as readdir2, readFile as readFile5, utimes } from "node:fs/promises";
+function isHeadlessRecord(v) {
+  if (typeof v !== "object" || v === null)
+    return false;
+  const r = v;
+  return typeof r.projectId === "string" && typeof r.alias === "string" && typeof r.claudeSessionId === "string" && typeof r.cwd === "string" && typeof r.createdAt === "string" && typeof r.lastUsedAt === "string" && typeof r.turnCount === "number";
+}
+async function readHeadless(projectId, alias) {
+  try {
+    const raw = await readFile5(paths.headlessFor(projectId, alias), "utf8");
+    const parsed = JSON.parse(raw);
+    return isHeadlessRecord(parsed) ? parsed : null;
+  } catch (err) {
+    if (isErrnoException(err) && err.code === "ENOENT")
+      return null;
+    throw err;
+  }
+}
+async function writeHeadless(record3) {
+  await atomicWriteJSON(paths.headlessFor(record3.projectId, record3.alias), record3);
+}
+function newThreadId() {
+  return randomBytes(6).reduce((id, byte) => id + (byte % 36).toString(36), "");
+}
+async function readThread(projectId, alias, thread) {
+  if (!THREAD_ID.test(thread))
+    return null;
+  try {
+    return JSON.parse(await readFile5(paths.threadFor(projectId, alias, thread), "utf8"));
+  } catch (err) {
+    if (isErrnoException(err) && err.code === "ENOENT")
+      return null;
+    throw err;
+  }
+}
+async function writeThread(projectId, alias, record3) {
+  await atomicWriteJSON(paths.threadFor(projectId, alias, record3.thread), record3);
+}
+async function withPeerLockOrSkip(projectId, alias, fn) {
+  try {
+    return await withLock(paths.headlessLockFor(projectId, alias), fn, { timeoutMs: PEER_LOCK_WAIT_MS });
+  } catch (err) {
+    if (!(err instanceof LockTimeoutError))
+      throw err;
+    process.stderr.write(`parley: per-peer lock for "${alias}" in project ${projectId} is held by another process, skipped its bookkeeping
+`);
+    return;
+  }
+}
+async function adoptConversation(projectId, alias, opts = {}) {
+  const record3 = await readHeadless(projectId, alias).catch(() => null);
+  if (!record3?.claudeSessionId || record3.origin === "live" || record3.adopted)
+    return null;
+  const lastUsed = new Date(record3.lastUsedAt);
+  if (!(Date.now() - lastUsed.getTime() <= ADOPT_WITHIN_MS)) {
+    if (!opts.dryRun)
+      await writeHeadless({ ...record3, adopted: true });
+    return null;
+  }
+  const thread = createHash2("sha1").update(record3.claudeSessionId).digest("hex").slice(0, 6);
+  const existing = await readThread(projectId, alias, thread).catch(() => {
+    return;
+  });
+  if (existing === undefined)
+    return null;
+  const exists = existing !== null;
+  if (opts.dryRun)
+    return exists ? null : thread;
+  if (!exists) {
+    await writeThread(projectId, alias, {
+      thread,
+      claudeSessionId: record3.claudeSessionId,
+      createdAt: record3.createdAt,
+      lastUsedAt: record3.lastUsedAt,
+      turnCount: record3.turnCount
+    });
+    await utimes(paths.threadFor(projectId, alias, thread), lastUsed, lastUsed);
+  }
+  await writeHeadless({ ...record3, adopted: true });
+  return exists ? null : thread;
+}
+async function listThreads(projectId, alias) {
+  let files;
+  try {
+    files = await readdir2(paths.threadsDirFor(projectId, alias));
+  } catch (err) {
+    if (isErrnoException(err) && err.code === "ENOENT")
+      return [];
+    throw err;
+  }
+  const threads = [];
+  for (const file of files) {
+    if (!file.endsWith(".json"))
+      continue;
+    const record3 = await readThread(projectId, alias, file.slice(0, -".json".length)).catch(() => null);
+    if (typeof record3?.lastUsedAt === "string" && typeof record3.turnCount === "number")
+      threads.push(record3);
+  }
+  return threads.sort((a, b) => b.lastUsedAt.localeCompare(a.lastUsedAt));
+}
+var THREAD_ID, PEER_LOCK_WAIT_MS = 2000, ADOPT_WITHIN_MS;
+var init_headless = __esm(() => {
+  init_paths();
+  init_locks();
+  THREAD_ID = /^[a-z0-9]{6}$/;
+  ADOPT_WITHIN_MS = 30 * 24 * 60 * 60 * 1000;
+});
+
 // src/cleanup/sweep.ts
 var exports_sweep = {};
 __export(exports_sweep, {
   sweep: () => sweep
 });
-import { readdir as readdir2, rm, stat, unlink as unlink2 } from "node:fs/promises";
+import { readdir as readdir3, rm, rmdir, stat, unlink as unlink2 } from "node:fs/promises";
 import { basename, join as join3 } from "node:path";
 async function sweep(opts = {}) {
   const dryRun = opts.dryRun === true;
@@ -6960,9 +7073,11 @@ async function sweep(opts = {}) {
     sessions: [],
     sentinels: [],
     headless: [],
+    threads: [],
     projectDirs: [],
     extensions: []
   };
+  const adopted = [];
   const advisories = [];
   const peersFile = await readPeers();
   const extensions = await readExtensions();
@@ -6972,16 +7087,16 @@ async function sweep(opts = {}) {
   ]);
   await sweepSessions(removed, dryRun);
   await sweepSentinels(removed, dryRun);
-  await sweepHeadless(peerAliases, removed, dryRun);
+  await sweepHeadless(peerAliases, removed, adopted, dryRun);
   await sweepEmptyProjectDirs(removed, dryRun);
   await sweepStaleExtensions(removed, dryRun);
   await collectAdvisories(peersFile.peers, advisories);
-  return { removed, advisories, dryRun };
+  return { removed, adopted, advisories, dryRun };
 }
 async function sweepSessions(removed, dryRun) {
   let entries;
   try {
-    entries = await readdir2(paths.sessionsDir);
+    entries = await readdir3(paths.sessionsDir);
   } catch (err) {
     if (isErrnoException(err) && err.code === "ENOENT")
       return;
@@ -7010,7 +7125,7 @@ async function sweepSessions(removed, dryRun) {
 async function sweepSentinels(removed, dryRun) {
   let entries;
   try {
-    entries = await readdir2(paths.byClaudePidDir);
+    entries = await readdir3(paths.byClaudePidDir);
   } catch (err) {
     if (isErrnoException(err) && err.code === "ENOENT")
       return;
@@ -7027,10 +7142,10 @@ async function sweepSentinels(removed, dryRun) {
     removed.sentinels.push(file);
   }
 }
-async function sweepHeadless(peerAliases, removed, dryRun) {
+async function sweepHeadless(peerAliases, removed, adopted, dryRun) {
   let projectDirs;
   try {
-    projectDirs = await readdir2(paths.headlessDir);
+    projectDirs = await readdir3(paths.headlessDir);
   } catch (err) {
     if (isErrnoException(err) && err.code === "ENOENT")
       return;
@@ -7043,29 +7158,61 @@ async function sweepHeadless(peerAliases, removed, dryRun) {
       const st = await stat(projectDir);
       if (!st.isDirectory())
         continue;
-      entries = await readdir2(projectDir);
+      entries = await readdir3(projectDir);
     } catch (err) {
       if (isErrnoException(err) && err.code === "ENOENT")
         continue;
       throw err;
     }
     for (const file of entries) {
-      if (!file.endsWith(".json"))
+      if (!file.endsWith(".json")) {
+        const gone = await sweepThreads(join3(projectDir, file), peerAliases.has(file), dryRun);
+        removed.threads.push(...gone.map((thread) => `${projectId}/${file}/${thread}`));
         continue;
+      }
       const alias = file.slice(0, -".json".length);
-      if (peerAliases.has(alias))
+      if (peerAliases.has(alias)) {
+        const thread = await withPeerLockOrSkip(projectId, alias, () => adoptConversation(projectId, alias, { dryRun }));
+        if (thread)
+          adopted.push(`${projectId}/${alias}/${thread}`);
         continue;
+      }
       if (!dryRun)
         await unlink2(join3(projectDir, file)).catch(() => {});
       removed.headless.push(`${projectId}/${alias}`);
     }
   }
 }
+async function sweepThreads(aliasDir, isPeer, dryRun) {
+  let files;
+  try {
+    files = (await readdir3(aliasDir)).filter((file) => file.endsWith(".json"));
+  } catch (err) {
+    if (isErrnoException(err) && (err.code === "ENOENT" || err.code === "ENOTDIR"))
+      return [];
+    throw err;
+  }
+  const gone = [];
+  for (const file of files) {
+    const path = join3(aliasDir, file);
+    if (isPeer) {
+      const age = await stat(path).then((s) => Date.now() - s.mtimeMs, () => 0);
+      if (age <= THREAD_TTL_MS)
+        continue;
+    }
+    if (!dryRun)
+      await unlink2(path).catch(() => {});
+    gone.push(file.slice(0, -".json".length));
+  }
+  if (!dryRun && gone.length === files.length)
+    await rmdir(aliasDir).catch(() => {});
+  return gone;
+}
 async function sweepEmptyProjectDirs(removed, dryRun) {
   for (const root of [paths.headlessDir, paths.logsDir, paths.memoryDir]) {
     let entries;
     try {
-      entries = await readdir2(root);
+      entries = await readdir3(root);
     } catch (err) {
       if (isErrnoException(err) && err.code === "ENOENT")
         continue;
@@ -7077,7 +7224,7 @@ async function sweepEmptyProjectDirs(removed, dryRun) {
         const st = await stat(dir);
         if (!st.isDirectory())
           continue;
-        const contents = await readdir2(dir);
+        const contents = await readdir3(dir);
         if (contents.length > 0)
           continue;
         if (!dryRun)
@@ -7094,7 +7241,7 @@ async function sweepEmptyProjectDirs(removed, dryRun) {
 async function sweepStaleExtensions(removed, dryRun) {
   let entries;
   try {
-    entries = await readdir2(paths.extensionsDir);
+    entries = await readdir3(paths.extensionsDir);
   } catch (err) {
     if (isErrnoException(err) && err.code === "ENOENT")
       return;
@@ -7147,17 +7294,19 @@ async function pathExists(p) {
     throw err;
   }
 }
-var HEARTBEAT_DEAD_MS;
+var HEARTBEAT_DEAD_MS, THREAD_TTL_MS;
 var init_sweep = __esm(() => {
   init_paths();
   init_sessions();
+  init_headless();
   init_peers();
   init_extensions();
   HEARTBEAT_DEAD_MS = 60 * 60 * 1000;
+  THREAD_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 });
 
 // src/registry/sessions.ts
-import { readdir as readdir3, readFile as readFile5, mkdir as mkdir3 } from "node:fs/promises";
+import { readdir as readdir4, readFile as readFile6, mkdir as mkdir3 } from "node:fs/promises";
 function isProcessAlive(pid) {
   if (!Number.isFinite(pid) || pid <= 0)
     return false;
@@ -7173,7 +7322,7 @@ function isProcessAlive(pid) {
 async function readManifest(sid) {
   let raw;
   try {
-    raw = await readFile5(paths.sessionManifest(sid), "utf8");
+    raw = await readFile6(paths.sessionManifest(sid), "utf8");
   } catch (err) {
     if (isErrnoException(err) && err.code === "ENOENT")
       return null;
@@ -7221,7 +7370,7 @@ async function setStatus(sid, status) {
 async function listSessions() {
   let entries;
   try {
-    entries = await readdir3(paths.sessionsDir);
+    entries = await readdir4(paths.sessionsDir);
   } catch (err) {
     if (isErrnoException(err) && err.code === "ENOENT")
       return [];
@@ -14930,43 +15079,7 @@ var parleyAdd = {
 init_peers();
 init_extensions();
 init_sessions();
-
-// src/registry/headless.ts
-init_paths();
-init_locks();
-import { readFile as readFile6, unlink as unlink3 } from "node:fs/promises";
-function isHeadlessRecord(v) {
-  if (typeof v !== "object" || v === null)
-    return false;
-  const r = v;
-  return typeof r.projectId === "string" && typeof r.alias === "string" && typeof r.claudeSessionId === "string" && typeof r.cwd === "string" && typeof r.createdAt === "string" && typeof r.lastUsedAt === "string" && typeof r.turnCount === "number";
-}
-async function readHeadless(projectId, alias) {
-  try {
-    const raw = await readFile6(paths.headlessFor(projectId, alias), "utf8");
-    const parsed = JSON.parse(raw);
-    return isHeadlessRecord(parsed) ? parsed : null;
-  } catch (err) {
-    if (isErrnoException(err) && err.code === "ENOENT")
-      return null;
-    throw err;
-  }
-}
-async function writeHeadless(record3) {
-  await atomicWriteJSON(paths.headlessFor(record3.projectId, record3.alias), record3);
-}
-async function clearHeadless(projectId, alias) {
-  try {
-    await unlink3(paths.headlessFor(projectId, alias));
-    return true;
-  } catch (err) {
-    if (isErrnoException(err) && err.code === "ENOENT")
-      return false;
-    throw err;
-  }
-}
-
-// src/routing/router.ts
+init_headless();
 init_locks();
 init_paths();
 
@@ -15357,7 +15470,7 @@ function formatConfig(config2) {
 // src/registry/memory.ts
 init_paths();
 init_locks();
-import { mkdir as mkdir5, readFile as readFile8, writeFile as writeFile4, unlink as unlink4 } from "node:fs/promises";
+import { mkdir as mkdir5, readFile as readFile8, writeFile as writeFile4, unlink as unlink3 } from "node:fs/promises";
 import { dirname as dirname3 } from "node:path";
 function memoryKey(line) {
   return line.replace(/^- /, "").toLowerCase().slice(0, 60);
@@ -15409,12 +15522,12 @@ async function appendMemoryBullets(projectId, alias, bulletsText) {
 
 // src/routing/queue.ts
 init_paths();
-import { mkdir as mkdir6, readdir as readdir4, readFile as readFile9, writeFile as writeFile5, rename as rename2, access, stat as stat2, unlink as unlink5 } from "node:fs/promises";
+import { mkdir as mkdir6, readdir as readdir5, readFile as readFile9, writeFile as writeFile5, rename as rename2, access, stat as stat2, unlink as unlink4 } from "node:fs/promises";
 import { join as join6 } from "node:path";
-import { randomBytes } from "node:crypto";
+import { randomBytes as randomBytes2 } from "node:crypto";
 var POLL_INTERVAL_MS = 500;
 async function* readMessages(dir) {
-  const entries = await readdir4(dir).catch(() => []);
+  const entries = await readdir5(dir).catch(() => []);
   for (const name of entries) {
     if (!name.endsWith(".json"))
       continue;
@@ -15440,7 +15553,7 @@ async function sendMessage(opts) {
   } catch {
     throw new Error(`parley: target session ${opts.toSessionId} is not registered`);
   }
-  const id = `msg-${randomBytes(6).toString("hex")}`;
+  const id = `msg-${randomBytes2(6).toString("hex")}`;
   const message = {
     id,
     from: opts.fromSessionId,
@@ -15522,7 +15635,7 @@ async function completeInProgress(sessionId, messageId) {
   const tmp = `${target}.${process.pid}.tmp`;
   await writeFile5(tmp, JSON.stringify(msg, null, 2));
   await rename2(tmp, target);
-  await unlink5(fromPath).catch(() => {});
+  await unlink4(fromPath).catch(() => {});
   return true;
 }
 async function recoverStuckInProgress(sessionId, olderThanMs) {
@@ -15541,7 +15654,7 @@ async function recoverStuckInProgress(sessionId, olderThanMs) {
       const tmp = `${target}.${process.pid}.tmp`;
       await writeFile5(tmp, JSON.stringify(restored, null, 2));
       await rename2(tmp, target);
-      await unlink5(path).catch(() => {});
+      await unlink4(path).catch(() => {});
       recovered++;
     } catch {}
   }
@@ -15565,7 +15678,7 @@ async function pruneRead(sessionId, olderThanMs) {
   const readDir = paths.sessionInboxRead(sessionId);
   let entries;
   try {
-    entries = await readdir4(readDir);
+    entries = await readdir5(readDir);
   } catch {
     return 0;
   }
@@ -15576,7 +15689,7 @@ async function pruneRead(sessionId, olderThanMs) {
     try {
       const s = await stat2(path);
       if (s.mtimeMs < cutoff) {
-        await unlink5(path);
+        await unlink4(path);
         removed++;
       }
     } catch {}
@@ -15590,10 +15703,10 @@ function sleep2(ms) {
 // src/routing/transcript.ts
 init_paths();
 import { appendFile, mkdir as mkdir7, readFile as readFile10 } from "node:fs/promises";
-async function appendTurn(projectId, alias, fromProject, question, answer, via) {
+async function appendTurn(projectId, alias, fromProject, question, answer, via, thread) {
   await mkdir7(paths.logsProjectDir(projectId), { recursive: true });
   const ts = new Date().toISOString();
-  const block = `## ${ts} · from ${fromProject} (${via})
+  const block = `## ${ts} · from ${fromProject} (${via})${thread ? ` · thread ${thread}` : ""}
 
 ` + `**Q:** ${question}
 
@@ -15630,6 +15743,12 @@ function askTimeoutMs() {
   const n = Number.parseInt(raw, 10);
   return Number.isFinite(n) && n > 0 ? n : ASK_TIMEOUT_DEFAULT_MS;
 }
+
+class UnknownThreadError extends Error {
+  constructor(thread, alias) {
+    super(`parley: no thread "${thread}" with "${alias}" in this project. Leave thread out to start a fresh conversation.`);
+  }
+}
 var CONCISE_PREAMBLE = `[parley directive: answer this query from a peer Claude Code session]
 Be direct. Use the minimum number of tool calls needed to answer accurately. Do NOT explore the codebase tangentially, propose follow-ups, refactor, or add work the user did not ask for. Format your answer concisely.
 
@@ -15645,21 +15764,24 @@ async function routeAsk(input) {
     throw new Error(`parley: "${input.peerRef}" is this session. You cannot ask yourself. Use the current session's tools directly.`);
   }
   const pointer = await readHeadless(input.fromProjectId, peer.alias);
-  const live = await resolveListening(peer.alias, peer.config, peer.sessionId, input.fromSessionId, pointer?.claudeSessionId);
+  const live = input.thread ? { kind: "none" } : await resolveListening(peer.alias, peer.config, peer.sessionId, input.fromSessionId, pointer?.claudeSessionId);
   switch (live.kind) {
     case "single": {
       const answer = await routeLive({ ...input, target: live.session, timeoutMs: effectiveTimeoutMs });
       await appendTurn(input.fromProjectId, peer.alias, input.fromProject, input.question, answer, "live");
-      if (live.session.claudeSessionId) {
-        await updatePointerToLive({
-          pointer,
+      const listener = live.session.claudeSessionId;
+      const counted2 = listener ? await withPeerLockOrSkip(input.fromProjectId, peer.alias, async () => {
+        await adoptConversation(input.fromProjectId, peer.alias);
+        return updatePointerToLive({
+          pointer: await readHeadless(input.fromProjectId, peer.alias),
           peer,
           fromProjectId: input.fromProjectId,
-          claudeSessionId: live.session.claudeSessionId
+          claudeSessionId: listener
         });
-      }
-      const pending = (pointer?.turnCount ?? 0) + 1 - (pointer?.rememberedTurn ?? 0);
-      return { alias: peer.alias, tier: "live", answer, pending };
+      }) : undefined;
+      const record4 = counted2 ?? await readHeadless(input.fromProjectId, peer.alias);
+      const pending2 = record4 ? record4.turnCount - (record4.rememberedTurn ?? 0) : 0;
+      return { alias: peer.alias, tier: "live", answer, pending: pending2 };
     }
     case "multiple": {
       const sids = live.sessions.map((s) => `${peer.alias}:${s.sessionId}`).join(", ");
@@ -15676,6 +15798,9 @@ async function routeAsk(input) {
   const config2 = await readParleyConfig();
   const fallback = config2.fallback;
   if (fallback === "ask") {
+    if (input.thread) {
+      throw new Error(`parley: thread "${input.thread}" continues headless, which fallback="ask" doesn't allow. Set fallback="headless" in ~/.claude/parley/config.json or PARLEY_FALLBACK=headless.`);
+    }
     throw new Error(noListenerMessage(peer.alias));
   }
   const cwd = expandHome(peer.config.path);
@@ -15690,49 +15815,65 @@ ${memory.trim()}
   const model = peer.config.model;
   const mcpServers = peer.config.mcpServers ?? {};
   const skipPermissions = peer.config.skipPermissions ?? config2.skipDefault;
-  return withLock(paths.headlessLockFor(input.fromProjectId, peer.alias), async () => {
-    const cached2 = await readHeadless(input.fromProjectId, peer.alias);
-    let tier;
-    let result;
-    const baseSpawn = {
-      cwd,
-      prompt: wrappedPrompt,
-      timeoutMs: effectiveTimeoutMs,
-      skipPermissions,
-      model,
-      mcpServers
-    };
-    if (cached2) {
+  const baseSpawn = {
+    cwd,
+    prompt: wrappedPrompt,
+    timeoutMs: effectiveTimeoutMs,
+    skipPermissions,
+    model,
+    mcpServers
+  };
+  const spawn2 = async (resume) => {
+    if (resume) {
       try {
-        result = await driver.spawn({ ...baseSpawn, sessionId: cached2.claudeSessionId });
-        tier = "headless-resumed";
+        return { tier: "headless-resumed", result: await driver.spawn({ ...baseSpawn, sessionId: resume }) };
       } catch (err) {
         process.stderr.write(`parley: resume failed for "${peer.alias}", falling back to fresh: ${errorMessage(err)}
 `);
-        result = await driver.spawn(baseSpawn);
-        tier = "headless-fresh";
       }
-    } else {
-      result = await driver.spawn(baseSpawn);
-      tier = "headless-fresh";
     }
+    return { tier: "headless-fresh", result: await driver.spawn(baseSpawn) };
+  };
+  const thread = input.thread ?? newThreadId();
+  if (input.thread && !await readThread(input.fromProjectId, peer.alias, thread)) {
+    throw new UnknownThreadError(thread, peer.alias);
+  }
+  const { tier, result } = await withLock(paths.threadLockFor(input.fromProjectId, peer.alias, thread), async () => {
+    const earlier = input.thread ? await readThread(input.fromProjectId, peer.alias, thread) : null;
+    const turn = await spawn2(earlier?.claudeSessionId);
+    const now = new Date().toISOString();
+    await writeThread(input.fromProjectId, peer.alias, {
+      thread,
+      claudeSessionId: turn.result.sessionId,
+      createdAt: earlier?.createdAt ?? now,
+      lastUsedAt: now,
+      turnCount: (earlier?.turnCount ?? 0) + 1
+    });
+    return turn;
+  }, { timeoutMs: effectiveTimeoutMs });
+  await appendTurn(input.fromProjectId, peer.alias, input.fromProject, input.question, result.output, tier, thread);
+  const counted = await withPeerLockOrSkip(input.fromProjectId, peer.alias, async () => {
+    await adoptConversation(input.fromProjectId, peer.alias);
+    const earlier = await readHeadless(input.fromProjectId, peer.alias);
     const now = new Date().toISOString();
     const next = {
       projectId: input.fromProjectId,
       alias: peer.alias,
-      claudeSessionId: result.sessionId,
+      claudeSessionId: earlier?.claudeSessionId ?? "",
       cwd,
-      createdAt: cached2?.createdAt ?? now,
+      createdAt: earlier?.createdAt ?? now,
       lastUsedAt: now,
-      turnCount: (cached2?.turnCount ?? 0) + 1,
-      origin: "headless",
-      rememberedTurn: cached2?.rememberedTurn
+      turnCount: (earlier?.turnCount ?? 0) + 1,
+      origin: earlier?.origin ?? "headless",
+      rememberedTurn: earlier?.rememberedTurn,
+      adopted: earlier?.adopted
     };
     await writeHeadless(next);
-    await appendTurn(input.fromProjectId, peer.alias, input.fromProject, input.question, result.output, tier);
-    const pending = next.turnCount - (next.rememberedTurn ?? 0);
-    return { alias: peer.alias, tier, answer: result.output, pending };
+    return next;
   });
+  const record3 = counted ?? await readHeadless(input.fromProjectId, peer.alias);
+  const pending = record3 ? record3.turnCount - (record3.rememberedTurn ?? 0) : 0;
+  return { alias: peer.alias, tier, answer: result.output, pending, thread };
 }
 async function updatePointerToLive(opts) {
   const now = new Date().toISOString();
@@ -15745,9 +15886,11 @@ async function updatePointerToLive(opts) {
     lastUsedAt: now,
     turnCount: (opts.pointer?.turnCount ?? 0) + 1,
     origin: "live",
-    rememberedTurn: opts.pointer?.rememberedTurn
+    rememberedTurn: opts.pointer?.rememberedTurn,
+    adopted: opts.pointer?.adopted
   };
   await writeHeadless(next);
+  return next;
 }
 function noListenerMessage(alias) {
   return [
@@ -15875,7 +16018,7 @@ async function routeLive(opts) {
 init_sessions();
 var parleyAsk = {
   name: "parley_ask",
-  description: "Send a question to another project's Claude agent and return its answer. Parley keeps one continuous conversation per (project, peer): a live listener answers in its window when one exists; otherwise it spawns headless `claude -p` in the peer's directory. Either path resumes the same claude session via --resume, so closing a window between turns doesn't lose memory. Peer is identified by alias (preferred, see parley_peers), by absolute path, or by alias:sid for a specific listener. The peer's project directory and CLAUDE.md/skills/MCP servers are loaded. Response is logged via parley_log.",
+  description: "Send a question to another project's Claude agent and return its answer. A live listener answers in its window when one exists; otherwise Parley spawns headless `claude -p` in the peer's directory. Every ask starts a fresh conversation that knows nothing of earlier asks beyond the peer's memory file, so make the question self-contained. A headless answer's first line names a thread, `[<alias> · thread <id>]`; passing that id as `thread` continues that conversation. Peer is identified by alias (preferred, see parley_peers), by absolute path, or by alias:sid for a specific listener. The peer's project directory and CLAUDE.md/skills/MCP servers are loaded. Response is logged via parley_log.",
   inputSchema: {
     type: "object",
     properties: {
@@ -15890,6 +16033,10 @@ var parleyAsk = {
       timeoutMs: {
         type: "number",
         description: "Optional. Max ms to wait for the peer to respond. Leave unset unless you specifically need a tight bound; peers doing execution work can take 30+ min. Default 1800000 (30 min). Override the default globally via PARLEY_ASK_TIMEOUT_MS."
+      },
+      thread: {
+        type: "string",
+        description: "Optional. The thread named in the first line of an earlier answer from this peer, to continue that conversation. Leave it out for a fresh look: a second review pass, or a new question."
       }
     },
     required: ["peer", "question"],
@@ -15899,7 +16046,8 @@ var parleyAsk = {
     return {
       peer: requireString("parley_ask", raw, "peer"),
       question: requireString("parley_ask", raw, "question"),
-      timeoutMs: optionalNumber(raw, "timeoutMs")
+      timeoutMs: optionalNumber(raw, "timeoutMs"),
+      thread: optionalString(raw, "thread")
     };
   },
   async handler(args, ctx) {
@@ -15916,9 +16064,10 @@ var parleyAsk = {
       fromSessionId: sid,
       fromProject,
       fromProjectId,
-      timeoutMs: args.timeoutMs
+      timeoutMs: args.timeoutMs,
+      thread: args.thread
     });
-    const prefix = result.tier === "live" ? `[${result.alias} · live]` : `[${result.alias}]`;
+    const prefix = result.tier === "live" ? `[${result.alias} · live]` : `[${result.alias} · thread ${result.thread}]`;
     const nudge = result.pending >= 3 ? `
 
 [parley: ${result.pending} turns with ${result.alias} not yet distilled — call parley_remember ${result.alias} to persist memory]` : "";
@@ -15934,7 +16083,7 @@ init_state();
 var CLEAN_INTERVAL_MS = 60 * 60 * 1000;
 var parleyClean = {
   name: "parley_clean",
-  description: "Remove stale Parley state on this machine: dead session manifests, dangling PID sentinels, and headless caches for peers that are no longer registered. peers.json entries with missing paths are flagged but never auto-removed. Idempotent. Use dryRun to preview without modifying anything. The MCP server also runs this sweep automatically once per hour, so explicit cleans are only needed for ad-hoc inspection.",
+  description: "Remove stale Parley state on this machine: dead session manifests, dangling PID sentinels, headless records and threads for peers that are no longer registered, and threads nobody continued for 30 days. Adopts a conversation an earlier per-peer record names as a thread. peers.json entries with missing paths are flagged but never auto-removed. Idempotent. Use dryRun to preview without modifying anything. The MCP server also runs this sweep automatically once per hour, so explicit cleans are only needed for ad-hoc inspection.",
   inputSchema: {
     type: "object",
     properties: {
@@ -15961,7 +16110,7 @@ var parleyClean = {
   }
 };
 function countRemoved(result) {
-  return result.removed.sessions.length + result.removed.sentinels.length + result.removed.headless.length + result.removed.projectDirs.length + result.removed.extensions.length;
+  return result.removed.sessions.length + result.removed.sentinels.length + result.removed.headless.length + result.removed.threads.length + result.removed.projectDirs.length + result.removed.extensions.length;
 }
 function formatReport(result, totalRemoved, now) {
   const lines = [];
@@ -15981,6 +16130,9 @@ function formatReport(result, totalRemoved, now) {
       for (const a of result.removed.headless)
         lines.push(`      ${a}`);
     }
+    if (result.removed.threads.length > 0) {
+      lines.push(`  • ${result.removed.threads.length} thread(s) of removed peers or unused for 30 days`);
+    }
     if (result.removed.projectDirs.length > 0) {
       lines.push(`  • ${result.removed.projectDirs.length} empty project director(ies)`);
       for (const d of result.removed.projectDirs)
@@ -15991,6 +16143,12 @@ function formatReport(result, totalRemoved, now) {
       for (const e of result.removed.extensions)
         lines.push(`      ${e}`);
     }
+  }
+  if (result.adopted.length > 0) {
+    lines.push("");
+    lines.push(`${result.dryRun ? "Would adopt" : "Adopted"} ${result.adopted.length} earlier conversation(s) as threads (see parley_peers):`);
+    for (const a of result.adopted)
+      lines.push(`  • ${a}`);
   }
   if (result.advisories.length > 0) {
     lines.push("");
@@ -16009,7 +16167,7 @@ function formatReport(result, totalRemoved, now) {
 
 // src/discovery/projects.ts
 init_sessions();
-import { readdir as readdir5, stat as stat3 } from "node:fs/promises";
+import { readdir as readdir6, stat as stat3 } from "node:fs/promises";
 import { createReadStream, existsSync as existsSync4 } from "node:fs";
 import { createInterface } from "node:readline";
 import { homedir as homedir4 } from "node:os";
@@ -16049,7 +16207,7 @@ function dedupeByPath(projects) {
 async function scanCliProjects() {
   let entries;
   try {
-    entries = await readdir5(PROJECTS_DIR);
+    entries = await readdir6(PROJECTS_DIR);
   } catch (err) {
     if (isErrnoException(err) && err.code === "ENOENT")
       return [];
@@ -16075,7 +16233,7 @@ async function scanCliProjects() {
 async function newestJsonl(dir) {
   let entries;
   try {
-    entries = await readdir5(dir);
+    entries = await readdir6(dir);
   } catch {
     return null;
   }
@@ -16182,7 +16340,7 @@ var parleyDiscover = {
 // src/registry/rooms.ts
 init_paths();
 init_locks();
-import { appendFile as appendFile2, mkdir as mkdir8, readFile as readFile11, readdir as readdir6, rm as rm3 } from "node:fs/promises";
+import { appendFile as appendFile2, mkdir as mkdir8, readFile as readFile11, readdir as readdir7, rm as rm3 } from "node:fs/promises";
 var ROOM_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
 class InvalidRoomNameError extends Error {
@@ -16298,7 +16456,7 @@ ${body}`.trim();
 async function listRooms(projectId) {
   let names;
   try {
-    names = await readdir6(paths.roomsProjectDir(projectId));
+    names = await readdir7(paths.roomsProjectDir(projectId));
   } catch (err) {
     if (isErrnoException(err) && err.code === "ENOENT")
       return [];
@@ -16318,6 +16476,19 @@ async function readRoomTranscript(projectId, room) {
 }
 
 // src/routing/gather.ts
+function roomAsk(state, from) {
+  return async (peer, question) => {
+    const ask = (thread) => routeAsk({ ...from, peerRef: peer, question, thread });
+    const result = await ask(state.threads?.[peer]).catch((err) => {
+      if (err instanceof UnknownThreadError)
+        return ask();
+      throw err;
+    });
+    if (result.thread)
+      state.threads = { ...state.threads, [peer]: result.thread };
+    return result.answer;
+  };
+}
 var PASS = /^\s*PASS\b/i;
 function isPass(answer) {
   return PASS.test(answer);
@@ -16432,7 +16603,7 @@ init_paths();
 var DEFAULT_ROUNDS = 3;
 var parleyGather = {
   name: "parley_gather",
-  description: "Convene two or more peers in a shared room and run a structured discussion. Round 1 is blind: every peer answers the question independently, in parallel. Later rounds are sequential: each peer sees what was said since its last turn, must agree or disagree explicitly, and may address others with @alias; a peer with nothing to add replies PASS. The room converges early when everyone passes. Each peer answers from its own continuous parley session (memory and transcript intact), so personas stay in character across rooms. By default every advisor is told the convening project's path and may read it to check facts before asserting them (`projectAccess: false` withholds it). Peers listed in `grounders` take a different role: they don't advise, they verify. Give the project under discussion as a grounder whenever the question makes claims about a codebase, so the advisors argue over checked facts instead of the chair's framing. Returns the full room transcript for the caller to synthesize; the room stays open for parley_room say/continue. Rooms are stored under ~/.claude/parley/rooms/<projectId>/<room>/.",
+  description: "Convene two or more peers in a shared room and run a structured discussion. Round 1 is blind: every peer answers the question independently, in parallel. Later rounds are sequential: each peer sees what was said since its last turn, must agree or disagree explicitly, and may address others with @alias; a peer with nothing to add replies PASS. The room converges early when everyone passes. Each peer answers with its parley memory and transcript, on one thread per room: its later rounds continue its earlier ones, apart from its other asks. By default every advisor is told the convening project's path and may read it to check facts before asserting them (`projectAccess: false` withholds it). Peers listed in `grounders` take a different role: they don't advise, they verify. Give the project under discussion as a grounder whenever the question makes claims about a codebase, so the advisors argue over checked facts instead of the chair's framing. Returns the full room transcript for the caller to synthesize; the room stays open for parley_room say/continue. Rooms are stored under ~/.claude/parley/rooms/<projectId>/<room>/.",
   inputSchema: {
     type: "object",
     properties: {
@@ -16542,17 +16713,7 @@ var parleyGather = {
       convenedBy: fromProject,
       projectPath: args.projectAccess ? ctx.getCurrentProjectPath() : undefined
     });
-    const ask = async (peer, question) => {
-      const result2 = await routeAsk({
-        peerRef: peer,
-        question,
-        fromSessionId: sid,
-        fromProject,
-        fromProjectId,
-        timeoutMs: args.timeoutMs
-      });
-      return result2.answer;
-    };
+    const ask = roomAsk(state, { fromSessionId: sid, fromProject, fromProjectId, timeoutMs: args.timeoutMs });
     const result = await withLock(paths.roomLockFor(fromProjectId, room), () => runRounds({ state, rounds: args.rounds, ask }));
     const tail = result.state.status === "converged" ? `
 
@@ -16588,7 +16749,7 @@ var parleyListen = {
 // src/tools/parleyLog.ts
 var parleyLog = {
   name: "parley_log",
-  description: "Return the recent conversation transcript with a peer from this project (Q&A history). Each (asker project, peer) pair has its own transcript; this returns the calling project's. Useful for reviewing what was previously asked or answered from here.",
+  description: "Return the recent conversation transcript with a peer from this project (Q&A history). Each (asker project, peer) pair has its own transcript; this returns the calling project's. Useful for reviewing what was previously asked or answered from here. Each headless turn's heading names its thread; pass it as `thread` to parley_ask to continue that conversation.",
   inputSchema: {
     type: "object",
     properties: {
@@ -16615,11 +16776,12 @@ var parleyLog = {
 // src/tools/parleyPeers.ts
 init_peers();
 init_sessions();
+init_headless();
 init_extensions();
 init_paths();
 var parleyPeers = {
   name: "parley_peers",
-  description: "List all addressable peers on this machine. Call this FIRST whenever the user references another project by name (e.g. 'ask <peer> about X', 'check with <peer>'). Each peer gets a headless row (always reachable, alias-keyed) plus one row per /parley listen session at that path (addressable as alias:sid). Includes peers from ~/.claude/parley/peers.json AND from any extension manifests under ~/.claude/parley/extensions/. Use the result to pick the right peer ref before calling parley_ask. Returns a markdown table: Peer, Type, Source, Mode (headless/listening), History (turns of cached headless conversation from the calling project, or '-'), Location (filesystem path, or `<plugin>@<marketplace>` for plugin-managed peers), Notes.",
+  description: "List all addressable peers on this machine. Call this FIRST whenever the user references another project by name (e.g. 'ask <peer> about X', 'check with <peer>'). Each peer gets a headless row (always reachable, alias-keyed) plus one row per /parley listen session at that path (addressable as alias:sid). Includes peers from ~/.claude/parley/peers.json AND from any extension manifests under ~/.claude/parley/extensions/. Use the result to pick the right peer ref before calling parley_ask. Returns a markdown table: Peer, Type, Source, Mode (headless/listening), History (turns the calling project has had with the peer, or '-'), Location (filesystem path, or `<plugin>@<marketplace>` for plugin-managed peers), Notes. A headless row's notes name up to three of the calling project's threads with the peer that have more than one turn, most recent first; pass one as `thread` to parley_ask to continue that conversation.",
   inputSchema: {
     type: "object",
     properties: {},
@@ -16713,12 +16875,17 @@ async function pushRowsForPath(opts) {
   const listening = opts.sessions.filter((s) => s.status === "listening" && s.sessionId !== opts.mySid);
   const nonListening = opts.sessions.filter((s) => s.status !== "listening" && s.sessionId !== opts.mySid);
   if (!opts.skipHeadless) {
+    await withPeerLockOrSkip(opts.fromProjectId, opts.alias, () => adoptConversation(opts.fromProjectId, opts.alias));
     const headless = await readHeadless(opts.fromProjectId, opts.alias);
     const history = headless ? `${headless.turnCount} ${headless.turnCount === 1 ? "turn" : "turns"}` : "-";
     const headlessNotes = [];
     const pending = headless ? headless.turnCount - (headless.rememberedTurn ?? 0) : 0;
     if (pending > 0)
       headlessNotes.push(`${pending} to distill`);
+    const threads = (await listThreads(opts.fromProjectId, opts.alias)).filter((t) => t.turnCount > 1).slice(0, 3);
+    if (threads.length > 0) {
+      headlessNotes.push(`threads: ${threads.map((t) => `${t.thread} (${t.turnCount} turns)`).join(", ")}`);
+    }
     if (opts.discovered)
       headlessNotes.push("discovered");
     if (nonListening.length > 0) {
@@ -16812,9 +16979,10 @@ var parleyReceiveNext = {
 };
 
 // src/tools/parleyRemember.ts
+init_headless();
 var parleyRemember = {
   name: "parley_remember",
-  description: "Persist durable memory about a peer so future parley_ask calls from this project arrive pre-primed. YOU distill the conversation: read the transcript with parley_log, then pass 3-8 concise `- bullet` takeaways (facts, decisions, preferences, patterns worth remembering) as `bullets`. Bullets are deduped against existing memory and prepended to the peer's next headless prompt. Call this at the end of a productive consultation, or when parley_ask reports pending turns. Memory is keyed per (this project, peer) and survives parley_reset.",
+  description: "Persist durable memory about a peer so future parley_ask calls from this project arrive pre-primed. YOU distill the conversation: read the transcript with parley_log, then pass 3-8 concise `- bullet` takeaways (facts, decisions, preferences, patterns worth remembering) as `bullets`. Bullets are deduped against existing memory and prepended to the peer's next headless prompt. Call this at the end of a productive consultation, or when parley_ask reports pending turns. Memory is keyed per (this project, peer) and reaches every conversation with the peer, fresh or continued.",
   inputSchema: {
     type: "object",
     properties: {
@@ -16855,7 +17023,7 @@ var parleyRemember = {
 init_peers();
 var parleyRemove = {
   name: "parley_remove",
-  description: "Remove a peer from ~/.claude/parley/peers.json. Does not delete cached headless sessions or transcripts. Use parley_reset for that.",
+  description: "Remove a peer from ~/.claude/parley/peers.json. Its transcripts and memory stay. The sweep removes its headless record and threads.",
   inputSchema: {
     type: "object",
     properties: {
@@ -16870,29 +17038,6 @@ var parleyRemove = {
   async handler(args) {
     const removed = await removePeer(args.alias);
     return removed ? `Removed peer "${args.alias}".` : `No peer named "${args.alias}" was configured.`;
-  }
-};
-
-// src/tools/parleyReset.ts
-var parleyReset = {
-  name: "parley_reset",
-  description: "Clear the cached headless Claude session for a peer in the calling project so the next parley_ask from here spawns fresh. Use when the peer agent has gotten stuck, when you want a clean slate for a new line of questioning, or after pruning Claude Code transcripts. Only affects this project's cached session; other projects keep their own.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      alias: { type: "string", description: "Peer alias whose headless session should be reset (for the calling project)." }
-    },
-    required: ["alias"],
-    additionalProperties: false
-  },
-  parseArgs(raw) {
-    return { alias: requireString("parley_reset", raw, "alias") };
-  },
-  async handler(args, ctx) {
-    const projectId = await ctx.getProjectId();
-    const alias = await canonicalAlias(args.alias);
-    const cleared = await clearHeadless(projectId, alias);
-    return cleared ? `Cleared cached headless session for "${args.alias}" in this project. Next ask will spawn fresh.` : `No cached headless session for "${args.alias}" in this project.`;
   }
 };
 
@@ -16973,17 +17118,7 @@ var parleyRoom = {
         }
         const manifest = await readManifest(sid);
         const fromProject = manifest?.alias ?? ctx.getCurrentProjectName();
-        const ask = async (peer, question) => {
-          const result2 = await routeAsk({
-            peerRef: peer,
-            question,
-            fromSessionId: sid,
-            fromProject,
-            fromProjectId,
-            timeoutMs: args.timeoutMs
-          });
-          return result2.answer;
-        };
+        const ask = roomAsk(state, { fromSessionId: sid, fromProject, fromProjectId, timeoutMs: args.timeoutMs });
         const before = state.messages.length;
         const result = await withLock(paths.roomLockFor(fromProjectId, room), () => runRounds({ state, rounds: args.rounds, ask }));
         const fresh = { ...result.state, messages: result.state.messages.slice(before) };
@@ -17061,7 +17196,6 @@ var tools = [
   parleyReceiveNext,
   parleyRemember,
   parleyRemove,
-  parleyReset,
   parleyRespond,
   parleyRoom
 ];

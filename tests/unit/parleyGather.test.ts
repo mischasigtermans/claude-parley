@@ -1,5 +1,5 @@
 import { describe, it, beforeEach, afterEach, expect } from 'vitest';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parleyGather } from '../../src/tools/parleyGather.js';
 import { parleyRoom } from '../../src/tools/parleyRoom.js';
@@ -158,18 +158,39 @@ describe('parley_gather', () => {
     ).rejects.toThrow(/invalid room name/);
   });
 
-  it('every turn runs through the peer\'s own continuous session and transcript', async () => {
+  it('every turn counts toward the peer\'s turns and lands in its transcript', async () => {
     const mock = scriptedDriver();
     _setClaudeDriverForTesting(mock);
     await parleyGather.handler({ grounders: [], projectAccess: true, peers: ['a', 'b'], question: 'q', rounds: 2 }, fakeCtx());
 
     const a = await readHeadless(PROJ, 'a');
     expect(a?.turnCount).toBe(2);
-    expect(a?.claudeSessionId).toBe('sid-a');
-    // round 2 resumed the round 1 session
-    const aCalls = mock.invocations.filter((i) => i.cwd === '/abs/a');
-    expect(aCalls[1].sessionId).toBe('sid-a');
+    expect(a?.claudeSessionId).toBe('');
     expect(await readTranscript(PROJ, 'a', 0)).toContain('parley room');
+  });
+
+  it('a participant keeps one thread per room, apart from its other asks', async () => {
+    const mock = scriptedDriver();
+    _setClaudeDriverForTesting(mock);
+
+    await parleyGather.handler({ grounders: [], projectAccess: true, peers: ['a', 'b'], question: 'q', room: 'one', rounds: 2 }, fakeCtx());
+    await parleyGather.handler({ grounders: [], projectAccess: true, peers: ['a', 'b'], question: 'q', room: 'two', rounds: 1 }, fakeCtx());
+
+    const aCalls = mock.invocations.filter((i) => i.cwd === '/abs/a');
+    expect(aCalls.map((c) => c.sessionId)).toEqual([undefined, 'sid-a', undefined]);
+  });
+
+  it('a participant whose room thread is gone continues the room on a new one', async () => {
+    _setClaudeDriverForTesting(scriptedDriver());
+    await parleyGather.handler({ grounders: [], projectAccess: true, peers: ['a', 'b'], question: 'q', room: 'one', rounds: 1 }, fakeCtx());
+    const gone = (await readRoom(PROJ, 'one'))!.threads!.a;
+    await rm(paths.threadFor(PROJ, 'a', gone));
+
+    await parleyRoom.handler({ action: 'continue', room: 'one', rounds: 1 }, fakeCtx());
+
+    const room = (await readRoom(PROJ, 'one'))!;
+    expect(room.messages.filter((m) => m.from === 'a').at(-1)!.text).toBe('a r2');
+    expect(room.threads!.a).not.toBe(gone);
   });
 
   it('a peer that errors is noted and the room still completes', async () => {

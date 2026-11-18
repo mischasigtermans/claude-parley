@@ -9,7 +9,7 @@ interface Args {
 
 export const parleyLog: ToolDef<Args> = {
   name: 'parley_log',
-  description: "Return the recent conversation transcript with a peer from this project (Q&A history). Each (asker project, peer) pair has its own transcript; this returns the calling project's. Useful for reviewing what was previously asked or answered from here.",
+  description: "Return the recent conversation transcript with a peer from this project (Q&A history). Each (asker project, peer) pair has its own transcript; this returns the calling project's. Useful for reviewing what was previously asked or answered from here. Each headless turn's heading names its thread; pass it as `thread` to parley_ask to continue that conversation.",
   inputSchema: {
     type: 'object',
     properties: {

@@ -11,7 +11,7 @@ interface Args {
 export const parleyClean: ToolDef<Args> = {
   name: 'parley_clean',
   description:
-    "Remove stale Parley state on this machine: dead session manifests, dangling PID sentinels, and headless caches for peers that are no longer registered. peers.json entries with missing paths are flagged but never auto-removed. Idempotent. Use dryRun to preview without modifying anything. The MCP server also runs this sweep automatically once per hour, so explicit cleans are only needed for ad-hoc inspection.",
+    "Remove stale Parley state on this machine: dead session manifests, dangling PID sentinels, headless records and threads for peers that are no longer registered, and threads nobody continued for 30 days. Adopts a conversation an earlier per-peer record names as a thread. peers.json entries with missing paths are flagged but never auto-removed. Idempotent. Use dryRun to preview without modifying anything. The MCP server also runs this sweep automatically once per hour, so explicit cleans are only needed for ad-hoc inspection.",
   inputSchema: {
     type: 'object',
     properties: {
@@ -45,6 +45,7 @@ function countRemoved(result: SweepResult): number {
     result.removed.sessions.length +
     result.removed.sentinels.length +
     result.removed.headless.length +
+    result.removed.threads.length +
     result.removed.projectDirs.length +
     result.removed.extensions.length
   );
@@ -68,6 +69,9 @@ function formatReport(result: SweepResult, totalRemoved: number, now: Date): str
       lines.push(`  • ${result.removed.headless.length} headless cache(s) for removed peers`);
       for (const a of result.removed.headless) lines.push(`      ${a}`);
     }
+    if (result.removed.threads.length > 0) {
+      lines.push(`  • ${result.removed.threads.length} thread(s) of removed peers or unused for 30 days`);
+    }
     if (result.removed.projectDirs.length > 0) {
       lines.push(`  • ${result.removed.projectDirs.length} empty project director(ies)`);
       for (const d of result.removed.projectDirs) lines.push(`      ${d}`);
@@ -76,6 +80,12 @@ function formatReport(result: SweepResult, totalRemoved: number, now: Date): str
       lines.push(`  • ${result.removed.extensions.length} stale extension manifest(s)`);
       for (const e of result.removed.extensions) lines.push(`      ${e}`);
     }
+  }
+
+  if (result.adopted.length > 0) {
+    lines.push('');
+    lines.push(`${result.dryRun ? 'Would adopt' : 'Adopted'} ${result.adopted.length} earlier conversation(s) as threads (see parley_peers):`);
+    for (const a of result.adopted) lines.push(`  • ${a}`);
   }
 
   if (result.advisories.length > 0) {

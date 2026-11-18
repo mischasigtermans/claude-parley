@@ -1,7 +1,8 @@
-import { readdir, rm, stat, unlink } from 'node:fs/promises';
+import { readdir, rm, rmdir, stat, unlink } from 'node:fs/promises';
 import { basename, join } from 'node:path';
-import { paths, expandHome } from '../registry/paths.js';
+import { paths, expandHome, type ProjectId } from '../registry/paths.js';
 import { isProcessAlive, readManifest } from '../registry/sessions.js';
+import { adoptConversation, withPeerLockOrSkip } from '../registry/headless.js';
 import { readPeers } from '../registry/peers.js';
 import { readExtensions } from '../registry/extensions.js';
 import { isErrnoException } from '../util/errors.js';
@@ -12,6 +13,8 @@ export interface SweepRemoved {
   sessions: string[];
   sentinels: string[];
   headless: string[];
+  /** `<projectId>/<alias>/<thread>` of each thread record removed. */
+  threads: string[];
   projectDirs: string[];
   /** Extension manifests whose declared peer paths no longer exist. */
   extensions: string[];
@@ -19,6 +22,8 @@ export interface SweepRemoved {
 
 export interface SweepResult {
   removed: SweepRemoved;
+  /** `<projectId>/<alias>/<thread>` of each conversation from before threads, adopted as a thread. */
+  adopted: string[];
   advisories: string[];
   dryRun: boolean;
 }
@@ -31,15 +36,17 @@ export async function sweep(
     sessions: [],
     sentinels: [],
     headless: [],
+    threads: [],
     projectDirs: [],
     extensions: [],
   };
+  const adopted: string[] = [];
   const advisories: string[] = [];
 
   const peersFile = await readPeers();
-  // Protect headless caches for BOTH user-curated peers and extension-provided
+  // Protect headless state for BOTH user-curated peers and extension-provided
   // peers (e.g. personas). Without the extension aliases here, the sweep would
-  // delete persona caches every cycle and break their cross-turn continuity.
+  // delete persona records and threads every cycle.
   const extensions = await readExtensions();
   const peerAliases = new Set([
     ...Object.keys(peersFile.peers),
@@ -48,12 +55,12 @@ export async function sweep(
 
   await sweepSessions(removed, dryRun);
   await sweepSentinels(removed, dryRun);
-  await sweepHeadless(peerAliases, removed, dryRun);
+  await sweepHeadless(peerAliases, removed, adopted, dryRun);
   await sweepEmptyProjectDirs(removed, dryRun);
   await sweepStaleExtensions(removed, dryRun);
   await collectAdvisories(peersFile.peers, advisories);
 
-  return { removed, advisories, dryRun };
+  return { removed, adopted, advisories, dryRun };
 }
 
 async function sweepSessions(removed: SweepRemoved, dryRun: boolean): Promise<void> {
@@ -103,6 +110,7 @@ async function sweepSentinels(removed: SweepRemoved, dryRun: boolean): Promise<v
 async function sweepHeadless(
   peerAliases: Set<string>,
   removed: SweepRemoved,
+  adopted: string[],
   dryRun: boolean,
 ): Promise<void> {
   let projectDirs: string[];
@@ -124,13 +132,51 @@ async function sweepHeadless(
       throw err;
     }
     for (const file of entries) {
-      if (!file.endsWith('.json')) continue;
+      if (!file.endsWith('.json')) {
+        const gone = await sweepThreads(join(projectDir, file), peerAliases.has(file), dryRun);
+        removed.threads.push(...gone.map((thread) => `${projectId}/${file}/${thread}`));
+        continue;
+      }
       const alias = file.slice(0, -'.json'.length);
-      if (peerAliases.has(alias)) continue;
+      if (peerAliases.has(alias)) {
+        const thread = await withPeerLockOrSkip(projectId as ProjectId, alias, () =>
+          adoptConversation(projectId as ProjectId, alias, { dryRun }),
+        );
+        if (thread) adopted.push(`${projectId}/${alias}/${thread}`);
+        continue;
+      }
       if (!dryRun) await unlink(join(projectDir, file)).catch(() => {});
       removed.headless.push(`${projectId}/${alias}`);
     }
   }
+}
+
+const THREAD_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * A removed peer loses every thread; a kept one loses the threads nobody
+ * continued for 30 days. Returns the ids of the threads that go.
+ */
+async function sweepThreads(aliasDir: string, isPeer: boolean, dryRun: boolean): Promise<string[]> {
+  let files: string[];
+  try {
+    files = (await readdir(aliasDir)).filter((file) => file.endsWith('.json'));
+  } catch (err) {
+    if (isErrnoException(err) && (err.code === 'ENOENT' || err.code === 'ENOTDIR')) return [];
+    throw err;
+  }
+  const gone: string[] = [];
+  for (const file of files) {
+    const path = join(aliasDir, file);
+    if (isPeer) {
+      const age = await stat(path).then((s) => Date.now() - s.mtimeMs, () => 0);
+      if (age <= THREAD_TTL_MS) continue;
+    }
+    if (!dryRun) await unlink(path).catch(() => {});
+    gone.push(file.slice(0, -'.json'.length));
+  }
+  if (!dryRun && gone.length === files.length) await rmdir(aliasDir).catch(() => {});
+  return gone;
 }
 
 /**

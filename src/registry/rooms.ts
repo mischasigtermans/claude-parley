@@ -32,6 +32,8 @@ export interface RoomState {
   messages: RoomMessage[];
   /** Highest message seq each participant has been shown. */
   seen: Record<string, number>;
+  /** Each participant's conversation in this room, so a later round continues it. */
+  threads?: Record<string, string>;
 }
 
 const ROOM_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;

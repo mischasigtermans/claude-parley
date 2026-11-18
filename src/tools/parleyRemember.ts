@@ -11,7 +11,7 @@ interface Args {
 export const parleyRemember: ToolDef<Args> = {
   name: 'parley_remember',
   description:
-    "Persist durable memory about a peer so future parley_ask calls from this project arrive pre-primed. YOU distill the conversation: read the transcript with parley_log, then pass 3-8 concise `- bullet` takeaways (facts, decisions, preferences, patterns worth remembering) as `bullets`. Bullets are deduped against existing memory and prepended to the peer's next headless prompt. Call this at the end of a productive consultation, or when parley_ask reports pending turns. Memory is keyed per (this project, peer) and survives parley_reset.",
+    "Persist durable memory about a peer so future parley_ask calls from this project arrive pre-primed. YOU distill the conversation: read the transcript with parley_log, then pass 3-8 concise `- bullet` takeaways (facts, decisions, preferences, patterns worth remembering) as `bullets`. Bullets are deduped against existing memory and prepended to the peer's next headless prompt. Call this at the end of a productive consultation, or when parley_ask reports pending turns. Memory is keyed per (this project, peer) and reaches every conversation with the peer, fresh or continued.",
   inputSchema: {
     type: 'object',
     properties: {

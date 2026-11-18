@@ -83,7 +83,7 @@ Call `parley_peers`. Print the result.
 
 ### `ask <peer> <question…>`
 
-Run the *ask sequence* below with `peer` = first argument, `question` = the remainder.
+Run the *ask sequence* below with `peer` = first argument, `question` = the remainder. When the user names a thread to continue, pass it as `thread`.
 
 ### `gather <peer> <peer>... <question…>`
 
@@ -113,10 +113,6 @@ Call `parley_remove`. Print confirmation.
 
 Call `parley_log` with `alias` and optional `tail` (default 20). Print the transcript.
 
-### `reset <alias>`
-
-Call `parley_reset`. Print confirmation. Use when a peer's headless agent has gotten stuck and you want a fresh session next time.
-
 ### `remember <peer>`
 
 Distill the conversation with a peer into durable memory. Parley injects that memory into every future headless ask to the peer from this project, so it stays primed across sessions.
@@ -129,7 +125,7 @@ If `parley_remember` reports memory is off for the peer, the user disabled it (i
 
 ### `clean [--dry-run]`
 
-Call `parley_clean`. Pass `dryRun: true` if `--dry-run` was supplied. Print the result. Removes stale session manifests, dead PID sentinels, and headless caches for peers no longer in `peers.json`. Idempotent. The MCP server runs the same sweep automatically once per hour, so explicit cleans are only needed for ad-hoc inspection.
+Call `parley_clean`. Pass `dryRun: true` if `--dry-run` was supplied. Print the result. Removes stale session manifests, dead PID sentinels, headless records and threads for peers no longer in `peers.json`, and threads nobody continued for 30 days. Idempotent. The MCP server runs the same sweep automatically once per hour, so explicit cleans are only needed for ad-hoc inspection.
 
 ### `stop`
 
@@ -145,19 +141,21 @@ Print the "Common moves" hint from the discovery menu.
 
 Once you have a confirmed peer alias and a user question:
 
-1. **Craft the question.** The peer is a separate Claude session. It cannot see this conversation, your code, or your context. Treat the question like a self-contained prompt:
+1. **Craft the question.** Every ask starts a fresh conversation. The peer cannot see this conversation, your code, your context, or your earlier asks. Only its memory file carries over. Treat the question like a self-contained prompt:
    - State the goal in one sentence.
    - Include any relevant snippet, error, or file content the peer needs.
    - Be specific about what you want back ("send the actual function signature, not a description").
 
 2. **Call `parley_ask`** with `peer` and `question`. The router picks one of three routes automatically:
-   - **Live**: peer has `/parley listen` running. The query goes to their inbox; their agent answers in-window.
-   - **Headless resumed**: previous headless session cached. Calls `claude --resume <sid> -p "..."` in the peer's cwd.
-   - **Headless fresh**: first time (or after `parley_reset`). Spawns a new `claude -p`. Subsequent calls reuse that session.
+   - **Live**: peer has `/parley listen` running and you passed no `thread`. The query goes to their inbox; their agent answers in-window.
+   - **Headless fresh**: no `thread`. Spawns a new `claude -p` in the peer's cwd.
+   - **Headless resumed**: you passed a `thread`. Calls `claude --resume <sid> -p "..."` in the peer's cwd.
 
-   You don't pick the route. The response prefix tells you when it routed live: `[peer · live]`. Headless (the silent default) shows as just `[peer]`. Resume vs fresh is recorded in the transcript log only.
+   A headless answer's first line names its thread: `[peer · thread k3x9qa]`. Pass that id as `thread` to continue that conversation: for a follow-up, or to have a reviewer fix its own findings. Leave `thread` out for a fresh pass, such as a second review. A live answer starts with `[peer · live]` and has no thread.
 
-3. **Display the answer**, then **act on it**. Don't just dump and stop. If the peer told you a type signature, apply it. If they described a migration step, run it. If they asked a follow-up, answer it (`parley_ask` again, same peer; the headless session resumes).
+   To continue a conversation from an earlier session, find its thread in `parley_peers` (a peer's notes list its threads with more than one turn) or in `parley_log <peer>` (each headless turn's heading names its thread).
+
+3. **Display the answer**, then **act on it**. Don't just dump and stop. If the peer told you a type signature, apply it. If they described a migration step, run it. If they asked a follow-up, answer it with `parley_ask` again and pass the answer's `thread`, or the peer starts over without it.
 
 4. **Keep memory current.** If `parley_ask`'s response ends with a `[parley: N turns ... not yet distilled]` nudge, run the `remember` action for that peer (read the transcript, distill, `parley_remember`). Also do this proactively after a productive consultation, or before resuming a peer that `parley_peers` shows with turns "to distill". This is how memory stays reliable without any session hook.
 
@@ -175,7 +173,7 @@ Use when the user wants two or more peers to discuss something together rather t
 4. **Synthesize.** The tool returns the whole transcript. Don't dump it. Report where the participants agree, where they disagree and why, and what each one's strongest point was. Quote a line when it carries the argument. Then give the user your own read.
 5. **Keep it going when useful.** If the user has a follow-up or wants to steer, `parley_room say` posts it as chair, then `parley_room continue` runs another round. `parley_room log` shows the full transcript. `parley_room close` ends it.
 
-Every peer turn runs through the same per-peer session as `parley_ask`, so the peer's memory and transcript stay continuous. Distil with `remember` afterwards as usual.
+Every peer turn writes the peer's transcript and reads its memory, like `parley_ask`. Each participant keeps one thread per room, so its later rounds continue its earlier ones. Distil with `remember` afterwards as usual.
 
 ## Listen loop (`/parley listen`)
 

@@ -1,6 +1,6 @@
 import { optionalBool, optionalNumber, optionalString, requireString, InvalidToolArgsError, type ToolDef } from './types.js';
-import { canonicalAlias, peerExists, routeAsk } from '../routing/router.js';
-import { runRounds } from '../routing/gather.js';
+import { canonicalAlias, peerExists } from '../routing/router.js';
+import { roomAsk, runRounds } from '../routing/gather.js';
 import { readManifest } from '../registry/sessions.js';
 import { createRoom, readRoom, renderRoom, slugForQuestion } from '../registry/rooms.js';
 import { withLock } from '../registry/locks.js';
@@ -21,7 +21,7 @@ const DEFAULT_ROUNDS = 3;
 export const parleyGather: ToolDef<Args> = {
   name: 'parley_gather',
   description:
-    "Convene two or more peers in a shared room and run a structured discussion. Round 1 is blind: every peer answers the question independently, in parallel. Later rounds are sequential: each peer sees what was said since its last turn, must agree or disagree explicitly, and may address others with @alias; a peer with nothing to add replies PASS. The room converges early when everyone passes. Each peer answers from its own continuous parley session (memory and transcript intact), so personas stay in character across rooms. By default every advisor is told the convening project's path and may read it to check facts before asserting them (`projectAccess: false` withholds it). Peers listed in `grounders` take a different role: they don't advise, they verify. Give the project under discussion as a grounder whenever the question makes claims about a codebase, so the advisors argue over checked facts instead of the chair's framing. Returns the full room transcript for the caller to synthesize; the room stays open for parley_room say/continue. Rooms are stored under ~/.claude/parley/rooms/<projectId>/<room>/.",
+    "Convene two or more peers in a shared room and run a structured discussion. Round 1 is blind: every peer answers the question independently, in parallel. Later rounds are sequential: each peer sees what was said since its last turn, must agree or disagree explicitly, and may address others with @alias; a peer with nothing to add replies PASS. The room converges early when everyone passes. Each peer answers with its parley memory and transcript, on one thread per room: its later rounds continue its earlier ones, apart from its other asks. By default every advisor is told the convening project's path and may read it to check facts before asserting them (`projectAccess: false` withholds it). Peers listed in `grounders` take a different role: they don't advise, they verify. Give the project under discussion as a grounder whenever the question makes claims about a codebase, so the advisors argue over checked facts instead of the chair's framing. Returns the full room transcript for the caller to synthesize; the room stays open for parley_room say/continue. Rooms are stored under ~/.claude/parley/rooms/<projectId>/<room>/.",
   inputSchema: {
     type: 'object',
     properties: {
@@ -133,17 +133,7 @@ export const parleyGather: ToolDef<Args> = {
       projectPath: args.projectAccess ? ctx.getCurrentProjectPath() : undefined,
     });
 
-    const ask = async (peer: string, question: string) => {
-      const result = await routeAsk({
-        peerRef: peer,
-        question,
-        fromSessionId: sid,
-        fromProject,
-        fromProjectId,
-        timeoutMs: args.timeoutMs,
-      });
-      return result.answer;
-    };
+    const ask = roomAsk(state, { fromSessionId: sid, fromProject, fromProjectId, timeoutMs: args.timeoutMs });
 
     const result = await withLock(paths.roomLockFor(fromProjectId, room), () =>
       runRounds({ state, rounds: args.rounds, ask }),

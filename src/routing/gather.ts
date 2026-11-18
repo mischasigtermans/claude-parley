@@ -7,8 +7,25 @@ import {
   writeRoom,
   type RoomState,
 } from '../registry/rooms.js';
+import { routeAsk, UnknownThreadError, type AskInput } from './router.js';
 
 export type AskFn = (peer: string, question: string) => Promise<string>;
+
+/**
+ * A participant's ask in a room. It continues the participant's thread in this
+ * room, and starts a new one when the sweep removed that thread.
+ */
+export function roomAsk(state: RoomState, from: Omit<AskInput, 'peerRef' | 'question' | 'thread'>): AskFn {
+  return async (peer, question) => {
+    const ask = (thread?: string) => routeAsk({ ...from, peerRef: peer, question, thread });
+    const result = await ask(state.threads?.[peer]).catch((err) => {
+      if (err instanceof UnknownThreadError) return ask();
+      throw err;
+    });
+    if (result.thread) state.threads = { ...state.threads, [peer]: result.thread };
+    return result.answer;
+  };
+}
 
 export interface RunRoundsInput {
   state: RoomState;

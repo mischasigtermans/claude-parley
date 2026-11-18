@@ -1,6 +1,5 @@
 import { optionalNumber, optionalString, requireString, InvalidToolArgsError, type ToolDef } from './types.js';
-import { routeAsk } from '../routing/router.js';
-import { runRounds } from '../routing/gather.js';
+import { roomAsk, runRounds } from '../routing/gather.js';
 import { readManifest } from '../registry/sessions.js';
 import {
   listRooms,
@@ -98,17 +97,7 @@ export const parleyRoom: ToolDef<Args> = {
         }
         const manifest = await readManifest(sid);
         const fromProject = manifest?.alias ?? ctx.getCurrentProjectName();
-        const ask = async (peer: string, question: string) => {
-          const result = await routeAsk({
-            peerRef: peer,
-            question,
-            fromSessionId: sid,
-            fromProject,
-            fromProjectId,
-            timeoutMs: args.timeoutMs,
-          });
-          return result.answer;
-        };
+        const ask = roomAsk(state, { fromSessionId: sid, fromProject, fromProjectId, timeoutMs: args.timeoutMs });
         const before = state.messages.length;
         const result = await withLock(paths.roomLockFor(fromProjectId, room), () =>
           runRounds({ state, rounds: args.rounds, ask }),

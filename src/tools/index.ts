@@ -10,7 +10,6 @@ import { parleyPeers } from './parleyPeers.js';
 import { parleyReceiveNext } from './parleyReceiveNext.js';
 import { parleyRemember } from './parleyRemember.js';
 import { parleyRemove } from './parleyRemove.js';
-import { parleyReset } from './parleyReset.js';
 import { parleyRoom } from './parleyRoom.js';
 import { parleyRespond } from './parleyRespond.js';
 
@@ -31,7 +30,6 @@ export const tools: AnyToolDef[] = [
   parleyReceiveNext,
   parleyRemember,
   parleyRemove,
-  parleyReset,
   parleyRespond,
   parleyRoom,
 ];

@@ -1,9 +1,14 @@
 import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { writeManifest, setStatus } from '../../src/registry/sessions.js';
 import { writePeers } from '../../src/registry/peers.js';
-import { writeHeadless, readHeadless } from '../../src/registry/headless.js';
+import { writeHeadless, readHeadless, readThread, writeThread, adoptConversation } from '../../src/registry/headless.js';
+import { holdForeignLock } from '../helpers/foreign-lock.js';
+import { touchLastClean } from '../../src/registry/state.js';
+import { sweep } from '../../src/cleanup/sweep.js';
+import type { PeerConfig } from '../../src/registry/peers.js';
 import { paths } from '../../src/registry/paths.js';
 import { routeAsk } from '../../src/routing/router.js';
 import { writeParleyConfig } from '../../src/config.js';
@@ -52,7 +57,7 @@ describe('routeAsk', () => {
     ).rejects.toThrow(/not found/);
   });
 
-  it('tier-2 fresh: spawns headless and caches the resulting session', async () => {
+  it('a first ask spawns fresh, answers with a thread, and counts the turn', async () => {
     const mock = createMockDriver({ output: 'a1', sessionId: 'sid-fresh' });
     _setClaudeDriverForTesting(mock);
     await writePeers({
@@ -70,74 +75,12 @@ describe('routeAsk', () => {
     expect(result.tier).toBe('headless-fresh');
     expect(result.alias).toBe('peer1');
     expect(result.answer).toBe('a1');
+    expect(result.thread).toMatch(/^[a-z0-9]{6}$/);
+    expect((await readThread(CALLER_PROJ, 'peer1', result.thread!))?.claudeSessionId).toBe('sid-fresh');
 
     const cached = await readHeadless(CALLER_PROJ, 'peer1');
-    expect(cached?.claudeSessionId).toBe('sid-fresh');
+    expect(cached?.claudeSessionId).toBe('');
     expect(cached?.turnCount).toBe(1);
-  });
-
-  it('tier-3 resumed: passes cached sessionId and increments turnCount', async () => {
-    const mock = createMockDriver({ output: 'a2', sessionId: 'sid-after' });
-    _setClaudeDriverForTesting(mock);
-    await writePeers({
-      peers: { peer1: { path: '/abs/peer1' } },
-    });
-    await writeHeadless({
-      projectId: CALLER_PROJ,
-      alias: 'peer1',
-      claudeSessionId: 'sid-before',
-      cwd: '/abs/peer1',
-      createdAt: '2026-01-01T00:00:00Z',
-      lastUsedAt: '2026-01-01T00:00:00Z',
-      turnCount: 5,
-    });
-
-    const result = await routeAsk({
-      peerRef: 'peer1',
-      question: 'q3',
-      fromSessionId: FROM_SESSION,
-      fromProject: 'caller',
-      fromProjectId: CALLER_PROJ,
-    });
-
-    expect(result.tier).toBe('headless-resumed');
-    expect(mock.invocations[0].sessionId).toBe('sid-before');
-    const cached = await readHeadless(CALLER_PROJ, 'peer1');
-    expect(cached?.turnCount).toBe(6);
-    expect(cached?.claudeSessionId).toBe('sid-after');
-  });
-
-  it('falls back from resume → fresh when the resumed spawn throws', async () => {
-    const mock = createMockDriver({
-      output: 'recovered',
-      sessionId: 'sid-fresh-after-fail',
-      throwOn: [0],
-    });
-    _setClaudeDriverForTesting(mock);
-    await writePeers({ peers: { peer1: { path: '/abs/peer1' } } });
-    await writeHeadless({
-      projectId: CALLER_PROJ,
-      alias: 'peer1',
-      claudeSessionId: 'sid-stale',
-      cwd: '/abs/peer1',
-      createdAt: '2026-01-01T00:00:00Z',
-      lastUsedAt: '2026-01-01T00:00:00Z',
-      turnCount: 1,
-    });
-
-    const result = await routeAsk({
-      peerRef: 'peer1',
-      question: 'q',
-      fromSessionId: FROM_SESSION,
-      fromProject: 'caller',
-      fromProjectId: CALLER_PROJ,
-    });
-
-    expect(result.tier).toBe('headless-fresh');
-    expect(result.answer).toBe('recovered');
-    expect(mock.invocations).toHaveLength(2);
-    expect(mock.invocations[0].sessionId).toBe('sid-stale');
-    expect(mock.invocations[1].sessionId).toBeUndefined();
   });
 
   it('passes per-peer model and mcpServers to the driver', async () => {
@@ -186,7 +129,7 @@ describe('routeAsk', () => {
     _setClaudeDriverForTesting(mock);
     await writePeers({ peers: { peer1: { path: '/abs/peer1' } } });
 
-    await routeAsk({
+    const result = await routeAsk({
       peerRef: 'peer1',
       question: 'archive me',
       fromSessionId: FROM_SESSION,
@@ -197,7 +140,7 @@ describe('routeAsk', () => {
     const log = await readFile(paths.logFor(CALLER_PROJ, 'peer1'), 'utf8');
     expect(log).toContain('archive me');
     expect(log).toContain('recorded');
-    expect(log).toContain('headless-fresh');
+    expect(log).toContain(`(headless-fresh) · thread ${result.thread}`);
   });
 
   it('routes live when exactly one listening session matches the peer path', async () => {
@@ -565,6 +508,504 @@ describe('routeAsk', () => {
       }),
     ).rejects.toThrow(/no live listener for "peer1".*fallback="ask".*Agent SDK credit pool/s);
   });
+
+  it('fallback="ask" refuses an ask with a thread, saying a thread needs fallback="headless"', async () => {
+    await writePeers({ peers: { peer1: { path: '/abs/peer1' } } });
+    await writeParleyConfig({ fallback: 'ask' });
+
+    const ask = routeAsk({
+      peerRef: 'peer1',
+      question: 'q',
+      fromSessionId: FROM_SESSION,
+      fromProject: 'caller',
+      fromProjectId: CALLER_PROJ,
+      thread: 'k3x9qa',
+    });
+
+    await expect(ask).rejects.toThrow(/thread "k3x9qa" continues headless.*fallback="headless"/);
+    await expect(ask).rejects.not.toThrow(/parley listen/);
+  });
+
+  it('a live answer keeps the adoption marker on the per-peer record', async () => {
+    _setClaudeDriverForTesting(createMockDriver());
+    await writePeers({ peers: { peer1: { path: '/abs/peer1' } } });
+    await writeHeadless({
+      projectId: CALLER_PROJ,
+      alias: 'peer1',
+      claudeSessionId: 'sid-050',
+      cwd: '/abs/peer1',
+      createdAt: '2026-01-01T00:00:00Z',
+      lastUsedAt: new Date().toISOString(),
+      turnCount: 3,
+      origin: 'headless',
+      adopted: true,
+    });
+    await writeManifest({
+      sessionId: 'lst-live',
+      claudeSessionId: 'claude-uuid-live',
+      projectPath: '/abs/peer1',
+      projectName: 'peer1',
+      alias: 'peer1',
+      startedAt: new Date().toISOString(),
+      lastHeartbeat: new Date().toISOString(),
+      status: 'registered',
+      pid: process.pid,
+    });
+    await setStatus('lst-live', 'listening');
+
+    const askPromise = routeAsk({
+      peerRef: 'peer1',
+      question: 'q',
+      fromSessionId: FROM_SESSION,
+      fromProject: 'caller',
+      fromProjectId: CALLER_PROJ,
+      timeoutMs: 2000,
+    });
+    const queue = await import('../../src/routing/queue.js');
+    const fs = await import('node:fs/promises');
+    await new Promise((r) => setTimeout(r, 80));
+    let msgId: string | undefined;
+    for (const dir of [paths.sessionInbox('lst-live'), paths.sessionInboxInProgress('lst-live')]) {
+      const files = (await fs.readdir(dir).catch(() => [])).filter((f) => f.endsWith('.json'));
+      if (files.length > 0) {
+        msgId = JSON.parse(await fs.readFile(`${dir}/${files[0]}`, 'utf8')).id;
+        break;
+      }
+    }
+    await queue.sendMessage({
+      fromSessionId: 'lst-live',
+      fromProject: 'peer1',
+      toSessionId: FROM_SESSION,
+      type: 'response',
+      content: 'live answer',
+      inReplyTo: msgId!,
+    });
+    expect((await askPromise).tier).toBe('live');
+
+    const record = await readHeadless(CALLER_PROJ, 'peer1');
+    expect(record?.origin).toBe('live');
+    expect(record?.adopted).toBe(true);
+  });
+
+  it('a live answer while another process holds the peer lock reports the pending turns the record holds', async () => {
+    await touchLastClean();
+    _setClaudeDriverForTesting(createMockDriver());
+    await writePeers({ peers: { peer1: { path: '/abs/peer1' } } });
+    await writeHeadless({
+      projectId: CALLER_PROJ,
+      alias: 'peer1',
+      claudeSessionId: 'sid-050',
+      cwd: '/abs/peer1',
+      createdAt: '2026-01-01T00:00:00Z',
+      lastUsedAt: new Date().toISOString(),
+      turnCount: 3,
+      origin: 'headless',
+      rememberedTurn: 1,
+      adopted: true,
+    });
+    await holdForeignLock(paths.headlessLockFor(CALLER_PROJ, 'peer1'));
+    await writeManifest({
+      sessionId: 'lst-live',
+      claudeSessionId: 'claude-uuid-live',
+      projectPath: '/abs/peer1',
+      projectName: 'peer1',
+      alias: 'peer1',
+      startedAt: new Date().toISOString(),
+      lastHeartbeat: new Date().toISOString(),
+      status: 'registered',
+      pid: process.pid,
+    });
+    await setStatus('lst-live', 'listening');
+
+    const askPromise = routeAsk({
+      peerRef: 'peer1',
+      question: 'q',
+      fromSessionId: FROM_SESSION,
+      fromProject: 'caller',
+      fromProjectId: CALLER_PROJ,
+      timeoutMs: 2000,
+    });
+    const queue = await import('../../src/routing/queue.js');
+    const fs = await import('node:fs/promises');
+    await new Promise((r) => setTimeout(r, 80));
+    let msgId: string | undefined;
+    for (const dir of [paths.sessionInbox('lst-live'), paths.sessionInboxInProgress('lst-live')]) {
+      const files = (await fs.readdir(dir).catch(() => [])).filter((f) => f.endsWith('.json'));
+      if (files.length > 0) {
+        msgId = JSON.parse(await fs.readFile(`${dir}/${files[0]}`, 'utf8')).id;
+        break;
+      }
+    }
+    await queue.sendMessage({
+      fromSessionId: 'lst-live',
+      fromProject: 'peer1',
+      toSessionId: FROM_SESSION,
+      type: 'response',
+      content: 'live answer',
+      inReplyTo: msgId!,
+    });
+    const result = await askPromise;
+
+    expect(result.tier).toBe('live');
+    const record = await readHeadless(CALLER_PROJ, 'peer1');
+    expect(record?.turnCount).toBe(3);
+    expect(result.pending).toBe(record!.turnCount - record!.rememberedTurn!);
+  });
+
+  it('a first ask answered live adopts the 0.5.0 conversation before the listener takes the record', async () => {
+    await touchLastClean();
+    _setClaudeDriverForTesting(createMockDriver());
+    await writePeers({ peers: { peer1: { path: '/abs/peer1' } } });
+    const lastUsedAt = new Date(Date.now() - 60_000).toISOString();
+    await writeHeadless({
+      projectId: CALLER_PROJ,
+      alias: 'peer1',
+      claudeSessionId: 'sid-050',
+      cwd: '/abs/peer1',
+      createdAt: '2026-01-01T00:00:00Z',
+      lastUsedAt,
+      turnCount: 44,
+      origin: 'headless',
+    });
+    await writeManifest({
+      sessionId: 'lst-live',
+      claudeSessionId: 'claude-uuid-live',
+      projectPath: '/abs/peer1',
+      projectName: 'peer1',
+      alias: 'peer1',
+      startedAt: new Date().toISOString(),
+      lastHeartbeat: new Date().toISOString(),
+      status: 'registered',
+      pid: process.pid,
+    });
+    await setStatus('lst-live', 'listening');
+
+    const askPromise = routeAsk({
+      peerRef: 'peer1',
+      question: 'q',
+      fromSessionId: FROM_SESSION,
+      fromProject: 'caller',
+      fromProjectId: CALLER_PROJ,
+      timeoutMs: 2000,
+    });
+    const queue = await import('../../src/routing/queue.js');
+    const fs = await import('node:fs/promises');
+    await new Promise((r) => setTimeout(r, 80));
+    let msgId: string | undefined;
+    for (const dir of [paths.sessionInbox('lst-live'), paths.sessionInboxInProgress('lst-live')]) {
+      const files = (await fs.readdir(dir).catch(() => [])).filter((f) => f.endsWith('.json'));
+      if (files.length > 0) {
+        msgId = JSON.parse(await fs.readFile(`${dir}/${files[0]}`, 'utf8')).id;
+        break;
+      }
+    }
+    await queue.sendMessage({
+      fromSessionId: 'lst-live',
+      fromProject: 'peer1',
+      toSessionId: FROM_SESSION,
+      type: 'response',
+      content: 'live answer',
+      inReplyTo: msgId!,
+    });
+    expect((await askPromise).tier).toBe('live');
+
+    const id = createHash('sha1').update('sid-050').digest('hex').slice(0, 6);
+    expect(await readThread(CALLER_PROJ, 'peer1', id)).toMatchObject({ claudeSessionId: 'sid-050', turnCount: 44, lastUsedAt });
+    expect(await readHeadless(CALLER_PROJ, 'peer1')).toMatchObject({
+      claudeSessionId: 'claude-uuid-live',
+      origin: 'live',
+      adopted: true,
+    });
+  });
+});
+
+describe.each<[string, PeerConfig]>([
+  ['a project peer', { path: '/abs/advisor' }],
+  ['a persona', { path: '/abs/advisor', type: 'persona' }],
+])('routeAsk to %s', (_kind, config) => {
+  const t = setup();
+  let mock: ReturnType<typeof createMockDriver>;
+  beforeEach(async () => {
+    await t.before();
+    await registerCaller();
+    let n = 0;
+    mock = createMockDriver({ output: 'a', sessionId: () => `sid-${++n}` });
+    _setClaudeDriverForTesting(mock);
+    await writePeers({ peers: { advisor: config } });
+  });
+  afterEach(async () => {
+    _setClaudeDriverForTesting(null);
+    await t.after();
+  });
+
+  const ask = (thread?: string) =>
+    routeAsk({
+      peerRef: 'advisor',
+      question: 'q',
+      fromSessionId: FROM_SESSION,
+      fromProject: 'caller',
+      fromProjectId: CALLER_PROJ,
+      thread,
+    });
+
+  it('a second ask starts a fresh session', async () => {
+    const first = await ask();
+    const second = await ask();
+
+    expect(first.tier).toBe('headless-fresh');
+    expect(second.tier).toBe('headless-fresh');
+    expect(mock.invocations[1].sessionId).toBeUndefined();
+    expect(second.thread).not.toBe(first.thread);
+    expect((await readHeadless(CALLER_PROJ, 'advisor'))?.turnCount).toBe(2);
+  });
+
+  it('an ask leaves the session the per-peer record names alone', async () => {
+    await writeHeadless({
+      projectId: CALLER_PROJ,
+      alias: 'advisor',
+      claudeSessionId: 'sid-continuous',
+      cwd: '/abs/advisor',
+      createdAt: '2026-01-01T00:00:00Z',
+      lastUsedAt: '2026-01-01T00:00:00Z',
+      turnCount: 5,
+    });
+
+    await ask();
+
+    expect(mock.invocations[0].sessionId).toBeUndefined();
+    const record = await readHeadless(CALLER_PROJ, 'advisor');
+    expect(record?.claudeSessionId).toBe('sid-continuous');
+    expect(record?.turnCount).toBe(6);
+  });
+
+  it('an ask to a peer without a record names no session in it', async () => {
+    await ask();
+    await ask();
+
+    const record = await readHeadless(CALLER_PROJ, 'advisor');
+    expect(record?.claudeSessionId).toBe('');
+    expect(record?.turnCount).toBe(2);
+  });
+
+  it('an ask with the thread of an earlier answer resumes that session', async () => {
+    const first = await ask();
+    await ask();
+    const followUp = await ask(first.thread);
+
+    expect(followUp.tier).toBe('headless-resumed');
+    expect(followUp.thread).toBe(first.thread);
+    expect(mock.invocations[2].sessionId).toBe('sid-1');
+  });
+
+  it('refuses a thread it does not know, before any spawn', async () => {
+    await expect(ask('nope42')).rejects.toThrow(/no thread "nope42"/);
+    await expect(ask('../../etc')).rejects.toThrow(/no thread/);
+    expect(mock.invocations).toHaveLength(0);
+  });
+
+  it('an ask with a thread continues it headless, also when a listener is live', async () => {
+    const first = await ask();
+    await writeManifest({
+      sessionId: 'listen1',
+      claudeSessionId: null,
+      projectPath: '/abs/advisor',
+      projectName: 'advisor',
+      alias: 'advisor',
+      startedAt: new Date().toISOString(),
+      lastHeartbeat: new Date().toISOString(),
+      status: 'registered',
+      pid: process.pid,
+    });
+    await setStatus('listen1', 'listening');
+
+    const followUp = await ask(first.thread);
+
+    expect(followUp.tier).toBe('headless-resumed');
+    expect(mock.invocations[1].sessionId).toBe('sid-1');
+  });
+
+  it('a resume that fails starts fresh and keeps the thread', async () => {
+    const first = await ask();
+    mock.configure({ output: 'recovered', sessionId: 'sid-new', throwOn: [1] });
+
+    const result = await ask(first.thread);
+
+    expect(result.tier).toBe('headless-fresh');
+    expect(result.thread).toBe(first.thread);
+    expect(mock.invocations[2].sessionId).toBeUndefined();
+    expect((await ask(first.thread)).tier).toBe('headless-resumed');
+    expect(mock.invocations[3].sessionId).toBe('sid-new');
+  });
+
+  it('continues a 0.5.0 conversation by the thread the sweep adopted it as', async () => {
+    await writeHeadless({
+      projectId: CALLER_PROJ,
+      alias: 'advisor',
+      claudeSessionId: 'sid-050',
+      cwd: '/abs/advisor',
+      createdAt: '2026-01-01T00:00:00Z',
+      lastUsedAt: new Date().toISOString(),
+      turnCount: 44,
+      origin: 'headless',
+    });
+    await sweep();
+
+    const result = await ask(createHash('sha1').update('sid-050').digest('hex').slice(0, 6));
+
+    expect(result.tier).toBe('headless-resumed');
+    expect(mock.invocations[0].sessionId).toBe('sid-050');
+  });
+
+  it('a first ask adopts a 0.5.0 conversation with its own turn count, and every later turn keeps the marker', async () => {
+    await touchLastClean();
+    const lastUsedAt = new Date(Date.now() - 60_000).toISOString();
+    await writeHeadless({
+      projectId: CALLER_PROJ,
+      alias: 'advisor',
+      claudeSessionId: 'sid-050',
+      cwd: '/abs/advisor',
+      createdAt: '2026-01-01T00:00:00Z',
+      lastUsedAt,
+      turnCount: 44,
+      origin: 'headless',
+    });
+    const id = createHash('sha1').update('sid-050').digest('hex').slice(0, 6);
+
+    await ask();
+
+    expect(await readThread(CALLER_PROJ, 'advisor', id)).toMatchObject({ turnCount: 44, lastUsedAt });
+    expect(await readHeadless(CALLER_PROJ, 'advisor')).toMatchObject({ turnCount: 45, adopted: true });
+
+    await ask();
+
+    expect(await readHeadless(CALLER_PROJ, 'advisor')).toMatchObject({ turnCount: 46, adopted: true });
+    expect((await readThread(CALLER_PROJ, 'advisor', id))?.turnCount).toBe(44);
+  });
+
+  it('an ask returns its answer and thread within seconds while another process holds the per-peer lock', async () => {
+    await holdForeignLock(paths.headlessLockFor(CALLER_PROJ, 'advisor'));
+
+    const started = Date.now();
+    const result = await ask();
+
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(result.answer).toBe('a');
+    expect(result.thread).toMatch(/^[a-z0-9]{6}$/);
+    expect((await readThread(CALLER_PROJ, 'advisor', result.thread!))?.claudeSessionId).toBe('sid-1');
+    expect(await readFile(paths.logFor(CALLER_PROJ, 'advisor'), 'utf8')).toContain(`· thread ${result.thread}`);
+    expect(await readHeadless(CALLER_PROJ, 'advisor')).toBeNull();
+    expect(result.pending).toBe(0);
+  }, 40_000);
+
+  it('an ask whose thread another ask holds waits up to its own timeout', async () => {
+    await writeThread(CALLER_PROJ, 'advisor', {
+      thread: 'k3x9qa',
+      claudeSessionId: 'sid-k3',
+      createdAt: new Date().toISOString(),
+      lastUsedAt: new Date().toISOString(),
+      turnCount: 1,
+    });
+    await holdForeignLock(paths.threadLockFor(CALLER_PROJ, 'advisor', 'k3x9qa'));
+
+    const started = Date.now();
+    const result = routeAsk({
+      peerRef: 'advisor',
+      question: 'q',
+      fromSessionId: FROM_SESSION,
+      fromProject: 'caller',
+      fromProjectId: CALLER_PROJ,
+      thread: 'k3x9qa',
+      timeoutMs: 500,
+    });
+
+    await expect(result).rejects.toThrow(/timed out acquiring lock/);
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(mock.invocations).toHaveLength(0);
+  }, 40_000);
+
+  it('two asks on one thread at once both answer, one spawn after the other', async () => {
+    const first = await ask();
+    const spans: [number, number][] = [];
+    _setClaudeDriverForTesting({
+      ...mock,
+      async spawn(opts) {
+        const start = Date.now();
+        await new Promise((r) => setTimeout(r, 300));
+        const out = await mock.spawn(opts);
+        spans.push([start, Date.now()]);
+        return out;
+      },
+    });
+
+    const results = await Promise.all([ask(first.thread), ask(first.thread)]);
+
+    expect(results.map((r) => r.thread)).toEqual([first.thread, first.thread]);
+    expect(spans).toHaveLength(2);
+    const [a, b] = spans.sort((x, y) => x[0] - y[0]);
+    expect(b[0]).toBeGreaterThanOrEqual(a[1]);
+    expect((await readThread(CALLER_PROJ, 'advisor', first.thread!))?.turnCount).toBe(3);
+  });
+
+  it('an unreadable thread file at the adopted id leaves the ask and the record alone', async () => {
+    await writeHeadless({
+      projectId: CALLER_PROJ,
+      alias: 'advisor',
+      claudeSessionId: 'sid-050',
+      cwd: '/abs/advisor',
+      createdAt: '2026-01-01T00:00:00Z',
+      lastUsedAt: new Date().toISOString(),
+      turnCount: 44,
+      origin: 'headless',
+    });
+    const id = createHash('sha1').update('sid-050').digest('hex').slice(0, 6);
+    await mkdir(paths.threadsDirFor(CALLER_PROJ, 'advisor'), { recursive: true });
+    await writeFile(paths.threadFor(CALLER_PROJ, 'advisor', id), '{ not json');
+
+    expect(await adoptConversation(CALLER_PROJ, 'advisor')).toBeNull();
+    const result = await ask();
+
+    expect(result.answer).toBe('a');
+    expect(await readHeadless(CALLER_PROJ, 'advisor')).toMatchObject({ turnCount: 45 });
+  });
+
+  it('a record too old to adopt stays unadopted after an ask brings its last use up to date', async () => {
+    await writeHeadless({
+      projectId: CALLER_PROJ,
+      alias: 'advisor',
+      claudeSessionId: 'sid-050',
+      cwd: '/abs/advisor',
+      createdAt: '2026-01-01T00:00:00Z',
+      lastUsedAt: new Date(Date.now() - 40 * 24 * 60 * 60 * 1000).toISOString(),
+      turnCount: 44,
+      origin: 'headless',
+    });
+    const id = createHash('sha1').update('sid-050').digest('hex').slice(0, 6);
+
+    await ask();
+
+    expect(await adoptConversation(CALLER_PROJ, 'advisor')).toBeNull();
+    expect(await readThread(CALLER_PROJ, 'advisor', id)).toBeNull();
+    expect(await readHeadless(CALLER_PROJ, 'advisor')).toMatchObject({ adopted: true, turnCount: 45 });
+  });
+
+  it('a headless turn keeps a live record live, so the sweep never adopts a listener session', async () => {
+    await writeHeadless({
+      projectId: CALLER_PROJ,
+      alias: 'advisor',
+      claudeSessionId: 'claude-listener',
+      cwd: '/abs/advisor',
+      createdAt: '2026-01-01T00:00:00Z',
+      lastUsedAt: new Date().toISOString(),
+      turnCount: 3,
+      origin: 'live',
+    });
+
+    await ask();
+    const result = await sweep();
+
+    expect((await readHeadless(CALLER_PROJ, 'advisor'))?.origin).toBe('live');
+    expect(result.adopted).toEqual([]);
+  });
 });
 
 describe('routeAsk extension peers', () => {
@@ -616,7 +1057,7 @@ describe('routeAsk extension peers', () => {
     expect(mock.invocations[0].cwd).toBe(stevePath);
   });
 
-  it('keys one session per peer regardless of which alias is used', async () => {
+  it('continues a thread regardless of which alias is used', async () => {
     const mock = createMockDriver({ output: 'a', sessionId: 'sid-shared' });
     _setClaudeDriverForTesting(mock);
     await writePersonasManifest();
@@ -637,6 +1078,7 @@ describe('routeAsk extension peers', () => {
       fromSessionId: FROM_SESSION,
       fromProject: 'caller',
       fromProjectId: CALLER_PROJ,
+      thread: r1.thread,
     });
     expect(r2.alias).toBe('steve-jobs');
     expect(r2.tier).toBe('headless-resumed');

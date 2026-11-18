@@ -161,7 +161,6 @@ describe('MCP server harness', () => {
       'parley_receive_next',
       'parley_remember',
       'parley_remove',
-      'parley_reset',
       'parley_respond',
       'parley_room',
     ]);
@@ -293,7 +292,7 @@ describe('MCP server harness', () => {
     expect(callContent(removeAgain)).toMatch(/No peer named/);
   });
 
-  it('parley_ask routes to mock driver and caches the headless session', async () => {
+  it('parley_ask routes to mock driver and records the turn on a new thread', async () => {
     const mockCfg = join(t.tmp.root, 'mock.json');
     await writeFile(mockCfg, JSON.stringify({ output: 'mock-answer', sessionId: 'mock-sid' }));
     h = await startHarness({ parleyDir: t.tmp.root, mockConfigPath: mockCfg });
@@ -307,20 +306,30 @@ describe('MCP server harness', () => {
       arguments: { peer: 'peer1', question: 'hi' },
     });
     const text = callContent(ask);
-    // v0.3.0: response prefix is just `[alias]`. Transport stays in the
-    // transcript log only.
-    expect(text).toMatch(/^\[peer1\]/);
+    const thread = /^\[peer1 · thread ([a-z0-9]{6})\]/.exec(text)?.[1];
+    expect(thread).toBeTruthy();
     expect(text).toContain('mock-answer');
 
     // Server picks projectId based on its parent's CWD (the test runner's).
     // Walk headless/ to find the resulting file regardless of the hash.
     const projectDirs = await readdir(join(t.tmp.root, 'headless'));
     expect(projectDirs).toHaveLength(1);
-    const headlessJson = JSON.parse(
-      await readFile(join(t.tmp.root, 'headless', projectDirs[0], 'peer1.json'), 'utf8'),
-    );
-    expect(headlessJson.claudeSessionId).toBe('mock-sid');
+    const projectDir = join(t.tmp.root, 'headless', projectDirs[0]);
+    const headlessJson = JSON.parse(await readFile(join(projectDir, 'peer1.json'), 'utf8'));
+    expect(headlessJson.claudeSessionId).toBe('');
     expect(headlessJson.projectId).toBe(projectDirs[0]);
+    const threadJson = JSON.parse(await readFile(join(projectDir, 'peer1', `${thread}.json`), 'utf8'));
+    expect(threadJson.claudeSessionId).toBe('mock-sid');
+
+    const followUp = await h.send('tools/call', {
+      name: 'parley_ask',
+      arguments: { peer: 'peer1', question: 'and then?', thread },
+    });
+    expect(callContent(followUp)).toMatch(new RegExp(`^\\[peer1 · thread ${thread}\\]`));
+    const continued = JSON.parse(await readFile(join(projectDir, 'peer1', `${thread}.json`), 'utf8'));
+    expect(continued.turnCount).toBe(2);
+    const peers = await h.send('tools/call', { name: 'parley_peers', arguments: {} });
+    expect(callContent(peers)).toContain(`threads: ${thread} (2 turns)`);
   });
 
   it('parley_listen flips this session to listening status', async () => {
@@ -364,15 +373,6 @@ describe('MCP server harness', () => {
       arguments: { alias: 'peer1' },
     });
     expect(callContent(result)).toMatch(/No transcript yet/);
-  });
-
-  it('parley_reset is a graceful no-op when no headless cache exists', async () => {
-    h = await startHarness({ parleyDir: t.tmp.root });
-    const result = await h.send('tools/call', {
-      name: 'parley_reset',
-      arguments: { alias: 'peer1' },
-    });
-    expect(callContent(result)).toMatch(/No cached headless session/);
   });
 
   it('parley_peers pluralizes turn counts correctly (regression)', async () => {

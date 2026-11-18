@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.6.0] - 2026-11-19
+
+Every ask starts fresh. One conversation per (project, peer) meant every session, subagent and worktree of a repo spoke to the same peer session: a review arrived with every earlier ask in its context, and the session grew with each ask (one reached 695 turns). An ask that passes a thread continues that conversation instead. The rule is the same for every peer.
+
+**Breaking**
+
+- **No peer resumes by itself.** Every `parley_ask` without a `thread` gets a new session, for a project peer as much as for a persona. A follow-up that builds on an earlier answer passes that answer's `thread`.
+- **`parley_reset` is removed**, with `/parley reset`. A fresh conversation is the default, so there is nothing to reset.
+
+**Added**
+
+- **`thread` on `parley_ask`.** Every headless answer starts with `[<alias> · thread <id>]`. An ask that passes the id resumes that conversation, also when a listener is live. An unknown or malformed id is refused before anything is spawned. When the resume fails, Parley starts a fresh session and keeps the thread id. With `fallback: "ask"`, an ask with a thread errors and says a thread needs `fallback: "headless"`.
+- **Thread records.** `headless/<project_id>/<alias>/<thread>.json`, with a lock per thread, so asks on different threads run in parallel.
+- **Threads in `parley_peers`.** A peer's headless row lists up to three of the calling project's threads with more than one turn, most recent first: `threads: k3x9qa (56 turns), b71d37 (3 turns)`.
+- **Threads in transcripts.** Each headless entry's heading names its thread: `## <timestamp> · from <project> (<tier>) · thread <id>`.
+- **One thread per participant per room.** `parley_gather` and `parley_room` keep each participant's thread in the room's `state.json`, so later rounds continue the earlier ones and stay apart from the peer's other asks. A room whose thread was swept gives that participant a new one on its next round.
+- **Thread sweep.** The sweep removes a thread nobody continued for 30 days, and every thread of a peer that was removed. `parley_clean` reports the count.
+- **Adoption of earlier conversations.** The session a per-peer record names becomes a thread, unless the record names a listener (`origin: 'live'`) or was unused for 30 days when 0.6.0 first looks at it. That look comes on the first ask to that peer, on `parley_peers`, or on the sweep, whichever comes first; while a 0.5.0 spawn holds the peer's lock it waits for the next one. The thread takes the record's turn count before 0.6.0 counts any turn there. Its id is the first 6 hex characters of the session id's SHA1. Either way the record gets `adopted: true`, so the decision holds: a record isn't adopted again after its thread expires, or after a later turn makes an old record look recent. `parley_clean` lists what it adopted.
+
+**Changed**
+
+- **The per-peer record counts turns and names the listener.** `headless/<project_id>/<alias>.json` keeps the turn count, `rememberedTurn` and the listener the live tier matches. A headless turn leaves its `claudeSessionId` and `origin` as they are, and writes `''` when there was no record, so an open 0.5.0 server on the same state folder never resumes a 0.6.0 session. The record update waits at most 2 seconds for the per-peer lock. When another process keeps it longer, the turn keeps its answer, thread and transcript entry and isn't counted.
+
+**Migration**
+
+- Existing conversations are adopted as threads on the first ask to that peer, on `/parley peers`, or on the sweep, whichever comes first. `/parley peers` lists one while it is among the peer's three most recent threads with more than one turn. Pass the id to continue one.
+- Restart open Claude Code sessions so they run 0.6.0. Until then they resume whatever session the per-peer record names.
+- While a session still runs 0.5.0, an ask to a peer it is asking at that moment answers normally but may not be counted.
+- Distil a conversation worth keeping with `/parley remember <peer>`. Its bullets reach every fresh conversation with that peer.
+- A room from 0.5.0 continues. Each participant in it starts a new thread there, which doesn't hold its own earlier turns.
+
 ## [0.5.0] - 2026-09-25
 
 Group discussions. Several peers, personas or projects, meet in one room and talk to each other instead of answering the caller one by one.

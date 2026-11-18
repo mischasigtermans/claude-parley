@@ -1,12 +1,27 @@
 import { describe, it, beforeEach, afterEach, expect } from 'vitest';
-import { mkdir, writeFile, readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdir, writeFile, readFile, rm, stat, utimes } from 'node:fs/promises';
 import { join } from 'node:path';
 import { sweep } from '../../src/cleanup/sweep.js';
-import { writeManifest, readManifest, type SessionManifest } from '../../src/registry/sessions.js';
-import { writeHeadless } from '../../src/registry/headless.js';
+import { writeManifest, readManifest, listLiveSessions, type SessionManifest } from '../../src/registry/sessions.js';
+import { readState } from '../../src/registry/state.js';
+import { holdForeignLock } from '../helpers/foreign-lock.js';
+import {
+  readHeadless,
+  writeHeadless,
+  writeThread,
+  readThread,
+  type HeadlessRecord,
+  type ThreadRecord,
+} from '../../src/registry/headless.js';
 import { writePeers } from '../../src/registry/peers.js';
 import { paths, type ProjectId } from '../../src/registry/paths.js';
 import { setup } from '../helpers/tmpdir.js';
+
+function thread(id: string): ThreadRecord {
+  const now = new Date().toISOString();
+  return { thread: id, claudeSessionId: `sid-${id}`, createdAt: now, lastUsedAt: now, turnCount: 1 };
+}
 
 function manifest(overrides: Partial<SessionManifest> = {}): SessionManifest {
   const now = new Date().toISOString();
@@ -111,6 +126,155 @@ describe('sweep', () => {
     expect(result.removed.headless).toContain(`${PROJ_B}/orphan`);
     expect(result.removed.headless).not.toContain(`${PROJ_A}/keeper`);
     expect(result.removed.headless).not.toContain(`${PROJ_B}/keeper`);
+  });
+
+  it('removes the threads of an alias that is no longer a peer', async () => {
+    const PROJ = 'dddddddddddd' as ProjectId;
+    await writePeers({ peers: { keeper: { path: process.cwd() } } });
+    await writeThread(PROJ, 'keeper', thread('aaaaaa'));
+    await writeThread(PROJ, 'orphan', thread('bbbbbb'));
+
+    const result = await sweep();
+
+    expect(result.removed.threads).toEqual([`${PROJ}/orphan/bbbbbb`]);
+    expect(await readThread(PROJ, 'keeper', 'aaaaaa')).not.toBeNull();
+    expect(await readThread(PROJ, 'orphan', 'bbbbbb')).toBeNull();
+  });
+
+  it('removes threads unused for 30 days and keeps recent ones', async () => {
+    const PROJ = 'eeeeeeeeeeee' as ProjectId;
+    await writePeers({ peers: { keeper: { path: process.cwd() } } });
+    await writeThread(PROJ, 'keeper', thread('recent'));
+    await writeThread(PROJ, 'keeper', thread('oldone'));
+    const old = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000);
+    await utimes(paths.threadFor(PROJ, 'keeper', 'oldone'), old, old);
+
+    const preview = await sweep({ dryRun: true });
+    expect(preview.removed.threads).toEqual([`${PROJ}/keeper/oldone`]);
+    expect(await readThread(PROJ, 'keeper', 'oldone')).not.toBeNull();
+
+    const result = await sweep();
+
+    expect(result.removed.threads).toEqual([`${PROJ}/keeper/oldone`]);
+    expect(await readThread(PROJ, 'keeper', 'recent')).not.toBeNull();
+    expect(await readThread(PROJ, 'keeper', 'oldone')).toBeNull();
+  });
+
+  describe('adopting a 0.5.0 conversation', () => {
+    const PROJ = 'ffffffffffff' as ProjectId;
+    const ID = createHash('sha1').update('sid-050').digest('hex').slice(0, 6);
+    const record = (overrides: Partial<HeadlessRecord> = {}): HeadlessRecord => ({
+      projectId: PROJ,
+      alias: 'keeper',
+      claudeSessionId: 'sid-050',
+      cwd: process.cwd(),
+      createdAt: '2026-01-01T00:00:00.000Z',
+      lastUsedAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
+      turnCount: 44,
+      origin: 'headless',
+      ...overrides,
+    });
+    beforeEach(() => writePeers({ peers: { keeper: { path: process.cwd() } } }));
+
+    it('turns the session a per-peer record names into a thread, once', async () => {
+      const rec = record();
+      await writeHeadless(rec);
+
+      const first = await sweep();
+
+      expect(first.adopted).toEqual([`${PROJ}/keeper/${ID}`]);
+      expect(await readThread(PROJ, 'keeper', ID)).toEqual({
+        thread: ID,
+        claudeSessionId: 'sid-050',
+        createdAt: rec.createdAt,
+        lastUsedAt: rec.lastUsedAt,
+        turnCount: 44,
+      });
+      const mtime = (await stat(paths.threadFor(PROJ, 'keeper', ID))).mtimeMs;
+      expect(Math.round(mtime)).toBe(new Date(rec.lastUsedAt).getTime());
+      expect(await readHeadless(PROJ, 'keeper')).toEqual({ ...rec, adopted: true });
+
+      const second = await sweep();
+      expect(second.adopted).toEqual([]);
+      expect((await stat(paths.threadFor(PROJ, 'keeper', ID))).mtimeMs).toBe(mtime);
+    });
+
+    it('never adopts a record twice, also after its thread is gone', async () => {
+      await writeHeadless(record());
+      await sweep();
+      await rm(paths.threadFor(PROJ, 'keeper', ID));
+
+      const second = await sweep();
+
+      expect(second.adopted).toEqual([]);
+      expect(await readThread(PROJ, 'keeper', ID)).toBeNull();
+      expect((await readHeadless(PROJ, 'keeper'))?.adopted).toBe(true);
+    });
+
+    it('skips a record unused for 30 days, a live one, and one that names no session', async () => {
+      await writeHeadless(record({ lastUsedAt: new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString() }));
+      expect((await sweep()).adopted).toEqual([]);
+      await writeHeadless(record({ origin: 'live' }));
+      expect((await sweep()).adopted).toEqual([]);
+      await writeHeadless(record({ claudeSessionId: '' }));
+      expect((await sweep()).adopted).toEqual([]);
+      expect(await readThread(PROJ, 'keeper', ID)).toBeNull();
+    });
+
+    it('completes and reports the rest while another process holds a peer lock', async () => {
+      await writeHeadless(record());
+      await writeHeadless(record({ alias: 'orphan' }));
+      await holdForeignLock(paths.headlessLockFor(PROJ, 'keeper'));
+
+      const started = Date.now();
+      const result = await sweep();
+
+      expect(Date.now() - started).toBeLessThan(5_000);
+      expect(result.adopted).toEqual([]);
+      expect(result.removed.headless).toEqual([`${PROJ}/orphan`]);
+      expect((await readHeadless(PROJ, 'keeper'))?.adopted).toBeUndefined();
+    }, 40_000);
+
+    it('lets the auto-sweep stamp its last clean while another process holds a peer lock', async () => {
+      await writeHeadless(record());
+      await holdForeignLock(paths.headlessLockFor(PROJ, 'keeper'));
+
+      await listLiveSessions();
+
+      expect((await readState()).lastCleanAt).toBeTruthy();
+    }, 40_000);
+
+    it('a record too old to adopt is marked, so a later sweep leaves it alone', async () => {
+      await writeHeadless(record({ lastUsedAt: new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString() }));
+      await sweep();
+      expect((await readHeadless(PROJ, 'keeper'))?.adopted).toBe(true);
+    });
+
+    it('a dry run leaves a record too old to adopt unmarked', async () => {
+      await writeHeadless(record({ lastUsedAt: new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString() }));
+      await sweep({ dryRun: true });
+      expect((await readHeadless(PROJ, 'keeper'))?.adopted).toBeUndefined();
+    });
+
+    it('an unreadable thread file at the adopted id leaves the sweep running and the record unadopted', async () => {
+      await writeHeadless(record());
+      await writeHeadless(record({ alias: 'orphan' }));
+      await mkdir(paths.threadsDirFor(PROJ, 'keeper'), { recursive: true });
+      await writeFile(paths.threadFor(PROJ, 'keeper', ID), '{ not json');
+
+      const result = await sweep();
+
+      expect(result.adopted).toEqual([]);
+      expect(result.removed.headless).toEqual([`${PROJ}/orphan`]);
+      expect((await readHeadless(PROJ, 'keeper'))?.adopted).toBeUndefined();
+    });
+
+    it('a dry run reports the adoption without writing it', async () => {
+      await writeHeadless(record());
+      expect((await sweep({ dryRun: true })).adopted).toEqual([`${PROJ}/keeper/${ID}`]);
+      expect(await readThread(PROJ, 'keeper', ID)).toBeNull();
+      expect((await readHeadless(PROJ, 'keeper'))?.adopted).toBeUndefined();
+    });
   });
 
   it('keeps headless caches for extension-provided peers (e.g. personas)', async () => {

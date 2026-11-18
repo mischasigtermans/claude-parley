@@ -7,7 +7,7 @@ interface Args {
 
 export const parleyRemove: ToolDef<Args> = {
   name: 'parley_remove',
-  description: 'Remove a peer from ~/.claude/parley/peers.json. Does not delete cached headless sessions or transcripts. Use parley_reset for that.',
+  description: 'Remove a peer from ~/.claude/parley/peers.json. Its transcripts and memory stay. The sweep removes its headless record and threads.',
   inputSchema: {
     type: 'object',
     properties: {
